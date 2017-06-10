@@ -1,25 +1,46 @@
 declare var module: any;
 declare var global: any;
 
-interface Game {
-    cache: {
-        structures: { [roomName: string]: {[structureType: string]: Structure[]} },
-        hostiles:  { [roomName: string]: Creep[] },
-        hostilesAndLairs: { [roomName: string]: RoomObject[] }
-        lairThreats: { [roomName: string]: StructureKeeperLair[] }
-        fleeObjects: { [roomName: string]: RoomObject[] }
-        mineralCount: { [mineralType: string]: number }
-        labProcesses: { [resourceType: string]: number }
-        activeLabCount: number;
-        placedRoad: boolean;
+interface Memory {
+    rooms: {[roomName: string]: RoomMemory };
+    temp: any;
+    stats: any;
+    roomAttacks: any;
+    hostileMemory: any;
+    empire: any;
+    strangerDanger: {[username: string]: StrangerReport[] };
+    traders: {[username: string]: { [resourceType: string]: number; }};
+    resourceOrder: {[time: number]: ResourceOrder};
+    playerConfig: {
+        terminalNetworkRange: number;
+        enableStats: boolean;
+        muteSpawn: boolean;
+        creditReserveAmount: number;
+        powerMinimum: number;
+        saverMode: boolean;
+        signText: string;
     };
-    operations: {[opName: string]: any }
+    profiler: {[identifier: string]: ProfilerData };
+    notifier: {
+        time: number,
+        earthTime: string,
+        message: string,
+    }[];
+    powerObservers: {[scanningRoomName: string]: {[roomName: string]: number}};
+    cpu: {
+        history: number[];
+        average: number;
+    };
+    nextGC: number;
+    gameTimeLastTick: number;
+    viz: {[tick: number]: any };
+    version: number;
+    flagCount: number;
 }
 
 interface Room {
     basicMatrix: CostMatrix;
-    findStructures<T>(structureType: string): T[];
-    getAltBattery(roomObject?: RoomObject): StructureContainer | Creep;
+    findStructures<T extends Structure>(structureType: string): T[];
     hostiles: Creep[];
     hostilesAndLairs: RoomObject[];
     fleeObjects: (Creep|Structure)[];
@@ -27,24 +48,69 @@ interface Room {
     roomType: number;
     _defaultMatrix: CostMatrix;
     defaultMatrix: CostMatrix;
-    structures: {[structureType: string]: Structure[] }
+    structures: {[structureType: string]: Structure[] };
     memory: RoomMemory;
+    serializePosition(position: {x: number, y: number, roomName: string}): number;
+    deserializePosition(serializedPosition: number): RoomPosition;
+    serializePositionTest(position: {x: number, y: number, roomName: string}): string;
+    deserializePositionTest(serializedPosition: string): RoomPosition;
 }
 
 interface RoomMemory {
     owner: string;
-    occupied: boolean;
+    avoid: number;
     srcPos: string;
     level: number;
     nextTrade: number;
     nextScan: number;
     nextRadar: number;
-    radarData: { x: number, y: number }
+    radarData: { x: number, y: number };
     spawnMemory: any;
     boostRequests: {[boostType: string]: {flagName: string, requesterIds: string[]} };
-    controllerBatteryId: string;
-    upgraderPositions: RoomPosition[];
+    portal: string;
+    portalEnd: number;
+    builder: {
+        demolish: string,
+        nextCheck: number,
+    };
+    layout: LayoutData;
+    finder: LayoutFinderData;
+    observation: Observation;
 }
+
+type StoreStructure = StructureTerminal|StructureContainer|StructureStorage;
+
+interface LayoutFinderData {
+    sourcePositions: RoomPosition[];
+    controllerPos: RoomPosition;
+    mineralPos: RoomPosition;
+    obstacleMap?: any;
+    progress?: LayoutFinderProgress;
+    validLayouts?: {[typeName: string]: ValidLayoutData[] };
+}
+
+interface LayoutFinderProgress {
+    anchor: Vector2;
+    rotation: number;
+    typeIndex: number;
+    final: boolean;
+}
+
+interface ValidLayoutData {
+    data: LayoutData;
+    energyScore: number;
+    structureScore: number;
+    foundSpawn: boolean;
+}
+
+interface LayoutData {
+    type: string;
+    anchor: Vector2;
+    rotation: number;
+    flex?: boolean;
+    turtle?: boolean;
+}
+type Vector2 = {x: number, y: number}
 
 interface RoomCoord {
     x: number;
@@ -60,16 +126,21 @@ interface RoomPosition {
     getPositionAtDirection(direction: number, range?: number): RoomPosition;
     isPassible(ignoreCreeps?: boolean): boolean;
     lookForStructure(structureType: string): Structure;
+    lookForStructure<T extends Structure>(structureType: string): T;
     isNearExit(range: number): boolean;
+    getRangeToClosest(positions: {pos: RoomPosition}[] | RoomPosition[]): number;
+    terrainCost(): number;
 }
 
 interface RoomObject {
-    findMemoStructure<T>(structureType: string, range: number, immediate?: boolean): T;
+    findMemoStructure<T extends Structure>(structureType: string, range: number, immediate?: boolean): T;
 }
 
 interface Creep {
     partCount(partType: string): number;
     blindMoveTo(destination: {pos: RoomPosition}, ops?: any, dareDevil?: boolean): number;
+    travelTo(destination: {pos: RoomPosition}|RoomPosition, ops?: any);
+    hitsTemp: number;
 }
 
 interface CreepMemory {
@@ -78,49 +149,7 @@ interface CreepMemory {
     scavanger: string;
 }
 
-interface Memory {
-    // we can add any properties we intend to use here, instead of making Memory of type any
-    temp: any;
-    strangerDanger: {[username: string]: StrangerReport[] };
-    stats: any;
-    traders: {[username: string]: { [resourceType: string]: number; }};
-    resourceOrder: {[time: number]: ResourceOrder};
-    playerConfig: {
-        terminalNetworkRange: number;
-        enableStats: boolean;
-        muteSpawn: boolean;
-        creditReserveAmount: number;
-        powerMinimum: number;
-    };
-    empire: any;
-    profiler: {[identifier: string]: ProfilerData };
-    notifier: {
-        time: number,
-        message: string,
-    }[];
-    roomAttacks: any;
-    powerObservers: {[scanningRoomName: string]: {[roomName: string]: number}};
-    cpu: {
-        history: number[];
-        average: number;
-    };
-    rooms: {[roomName: string]: RoomMemory };
-    hostileMemory: {[id: string]: HostileMemory };
-    nextGC: number;
-    timeoutTracker: {
-        operation: string;
-        mission: string;
-        phase: string;
-    }
-}
-
-interface HostileMemory {
-    potentials: {[partType: string]: number}
-}
-
 interface ProfilerData {
-    startOfPeriod: number;
-    lastTickTracked: number;
     total: number;
     count: number;
     costPerCall: number;
@@ -129,6 +158,10 @@ interface ProfilerData {
     cpu: number;
     consoleReport: boolean;
     period: number;
+    highest: number;
+    endOfPeriod: number;
+    lastTickTracked: number;
+    max: number;
 }
 
 interface ResourceOrder {
@@ -144,11 +177,6 @@ interface StrangerReport {
     roomName: string;
 }
 
-interface StructureController {
-    getBattery(structureType?: string): StructureLink | StructureStorage | StructureContainer;
-    getUpgraderPositions(): RoomPosition[];
-}
-
 interface StructureKeeperLair {
     keeper: Creep;
 }
@@ -160,12 +188,12 @@ interface StructureObserver {
 }
 
 interface Observation {
-    purpose: string,
-    roomName: string,
-    room?: Room,
+    purpose: string;
+    roomName: string;
+    room?: Room;
 }
 
-interface StructureTerminal {
+interface StructureTerminal extends OwnedStructure {
     _send(resourceType: string, amount: number, roomName: string, description?: string): number;
     send(resourceType: string, amount: number, roomName: string, description?: string): number;
 }

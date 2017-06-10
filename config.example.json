@@ -8,13 +8,13 @@
   "targets": {
     "dev": {
       "branch": "default",
-      "bundle": true,
+      "bundle": false,
       "lint": false,
       "lintRequired": false
     },
     "prod": {
       "branch": "default",
-      "bundle": true,
+      "bundle": false,
       "lint": false,
       "lintRequired": false
     }

@@ -251,6 +251,7 @@ declare var POWER_SPAWN_HITS: number;
 declare var POWER_SPAWN_ENERGY_CAPACITY: number;
 declare var POWER_SPAWN_POWER_CAPACITY: number;
 declare var POWER_SPAWN_ENERGY_RATIO: number;
+declare var PORTAL_DECAY: number;
 declare var EXTRACTOR_HITS: number;
 declare var LAB_HITS: number;
 declare var LAB_MINERAL_CAPACITY: number;
@@ -298,8 +299,7 @@ declare var NUKE_LAND_TIME: number;
 declare var NUKE_RANGE: number;
 declare var NUKE_DAMAGE: {
     0: number;
-    1: number;
-    4: number;
+    2: number;
 };
 declare var REACTIONS: {
     H: {
@@ -593,6 +593,7 @@ declare class ConstructionSite extends RoomObject {
     remove(): number;
 }
 declare var Memory: Memory;
+declare var RawMemory: RawMemory;
 declare var Game: Game;
 declare var PathFinder: PathFinder;
 declare type Controller = StructureController;
@@ -869,65 +870,65 @@ declare class Flag extends RoomObject {
     }): number;
 }
 /**
- * The main global game object containing all the gameplay information.
+ * The main init game object containing all the gameplay information.
  */
 interface Game {
     /**
      * An object containing information about your CPU usage with the following properties:
      */
-    cpu: CPU;
+    readonly cpu: CPU;
     /**
      * A hash containing all your creeps with creep names as hash keys.
      */
-    creeps: {
+    readonly creeps: {
         [creepName: string]: Creep;
     };
     /**
      * A hash containing all your flags with flag names as hash keys.
      */
-    flags: {
+    readonly flags: {
         [flagName: string]: Flag;
     };
     /**
      * Your Global Control Level, an object with the following properties :
      */
-    gcl: GlobalControlLevel;
+    readonly gcl: GlobalControlLevel;
     /**
-     * A global object representing world GameMap.
+     * A init object representing world GameMap.
      */
-    map: GameMap;
+    readonly map: GameMap;
     /**
-     * A global object representing the in-game market.
+     * A init object representing the in-game market.
      */
-    market: Market;
+    readonly market: Market;
     /**
      * A hash containing all the rooms available to you with missionRoom names as hash keys.
      */
-    rooms: {
+    readonly rooms: {
         [roomName: string]: Room;
     };
     /**
      * A hash containing all your spawns with spawn names as hash keys.
      */
-    spawns: {
+    readonly spawns: {
         [spawnName: string]: Spawn;
     };
     /**
      * A hash containing all your structures with structure id as hash keys.
      */
-    structures: {
+    readonly structures: {
         [structureId: string]: OwnedStructure;
     };
     /**
      * A hash containing all your construction sites with their id as hash keys.
      */
-    constructionSites: {
+    readonly constructionSites: {
         [constructionSiteId: string]: ConstructionSite;
     };
     /**
      * System game tick counter. It is automatically incremented on every tick.
      */
-    time: number;
+    readonly time: number;
     /**
      * Get an object with the specified unique ID. It may be a game object of any type. Only objects from the rooms which are visible to you can be accessed.
      * @param id The unique identificator.
@@ -1112,7 +1113,7 @@ interface SurvivalGameInfo {
     wave: number;
 }
 /**
- * A global object representing world map. Use it to navigate between rooms. The object is accessible via Game.map property.
+ * A init object representing world map. Use it to navigate between rooms. The object is accessible via Game.map property.
  */
 declare class GameMap {
     /**
@@ -1183,7 +1184,7 @@ declare class GameMap {
     isRoomAvailable(roomName: string): boolean;
 }
 /**
- * A global object representing the in-game market. You can use this object to track resource transactions to/from your
+ * A init object representing the in-game market. You can use this object to track resource transactions to/from your
  * terminals, and your buy/sell orders (in development). The object is accessible via the singleton Game.market property.
  */
 declare class Market {
@@ -1272,7 +1273,7 @@ interface Memory {
  */
 declare class Mineral extends RoomObject {
     /**
-     * The prototype is stored in the Mineral.prototype global object. You can use it to extend game objects behaviour globally.
+     * The prototype is stored in the Mineral.prototype init object. You can use it to extend game objects behaviour globally.
      */
     prototype: Mineral;
     /**
@@ -1432,6 +1433,7 @@ interface CostMatrix {
      */
     deserialize(val: number[]): CostMatrix;
 }
+
 /**
  * RawMemory object allows to implement your own memory stringifier instead of built-in serializer based on JSON.stringify.
  */
@@ -1445,7 +1447,10 @@ interface RawMemory {
      * @param value New memory value as a string.
      */
     set(value: string): any;
+    segments: {[segmentId: number]: string};
+    setActiveSegments(ids: number[]);
 }
+
 /**
  * A dropped piece of resource. It will decay after a while if not picked up. Dropped resource pile decays for ceil(amount/1000) units per tick.
  */
@@ -1659,6 +1664,8 @@ declare class RoomPosition {
  * An object representing the missionRoom in which your units and structures are in. It can be used to look around, find paths, etc. Every object in the missionRoom contains its linked Room instance in the missionRoom property.
  */
 declare class Room {
+    visual: RoomVisual;
+
     /**
      * The Controller structure of this missionRoom, if present, otherwise undefined.
      */
@@ -1832,7 +1839,7 @@ declare class Room {
  */
 declare class Source extends RoomObject {
     /**
-     * The prototype is stored in the Source.prototype global object. You can use it to extend game objects behaviour globally:
+     * The prototype is stored in the Source.prototype init object. You can use it to extend game objects behaviour globally:
      */
     prototype: Source;
     /**
@@ -2433,11 +2440,63 @@ declare class RoomVisual {
     constructor(roomName: string);
 
     line(pos1: RoomPosition, pos2: RoomPosition, style?: RoomVisualLineStyle);
+    text(text: string, x: number, y: number, style?: RoomVisualTextStyle);
+    text(text: string, pos: RoomPosition, style?: RoomVisualTextStyle);
+    rect(pos: RoomPosition, width: number, height: number, style?: RoomVisualStyle);
+    rect(x: number, y: number, width: number, height: number, style?: RoomVisualStyle);
+    circle(x: number, y: number, style?: RoomVisualCircleStyle);
+    circle(pos: RoomPosition, style?: RoomVisualCircleStyle);
+    poly(points: {x: number, y: number}[], style?: RoomVisualPolyStyle )
+    getSize(): number;
 }
 
 interface RoomVisualLineStyle {
     width?: number;
     color?: string;
     opacity?: number;
+    lineStyle?: string;
+}
+
+interface RoomVisualTextStyle {
+    color?: string;
+    font?: number|string;
+    stroke?: string;
+    strokeWidth?: number;
+    background?: string;
+    backgroundPadding?: string;
+    align?: string;
+    opacity?: number;
+}
+
+interface RoomVisualStyle {
+    color?: string;
+    fill?: string;
+    stroke?: string;
+    strokeWidth?: number;
+    opacity?: number;
+}
+
+interface RoomVisualShapeStyle {
+    fill?: string;
+    stroke?: string;
+    strokeWidth?: number;
+    opacity?: number;
+    lineStyle?: string;
+}
+
+interface RoomVisualCircleStyle {
+    radius?: number;
+    fill?: string;
+    opacity?: number;
+    stroke?: string;
+    strokeWidth?: number;
+    lineStyle?: string;
+}
+
+interface RoomVisualPolyStyle {
+    fill?: string;
+    opacity?: number;
+    stroke?: string;
+    strokeWidth?: number;
     lineStyle?: string;
 }
