@@ -1,12 +1,10 @@
-import {Mission} from "./Mission";
+import {Mission, MissionMemory} from "./Mission";
 import {Operation} from "../operations/Operation";
-import {Agent} from "./Agent";
+import {Agent} from "../agents/Agent";
 export class EmergencyMinerMission extends Mission {
 
-    public emergencyMiners: Agent[];
-    public memory: {
-        lastTick: number
-    };
+    private emergencyMiners: Agent[];
+    protected memory: EmergencyMinerMemory;
 
     /**
      * Checks every 100 ticks if storage is full or a miner is present, if not spawns an emergency miner. Should come
@@ -18,7 +16,10 @@ export class EmergencyMinerMission extends Mission {
         super(operation, "emergencyMiner");
     }
 
-    public initMission() {
+    public init() {
+    }
+
+    public update() {
     }
 
     public roleCall() {
@@ -40,15 +41,15 @@ export class EmergencyMinerMission extends Mission {
         this.emergencyMiners = this.headCount("emergencyMiner", () => this.workerBody(2, 1, 1), getMaxMiners);
     }
 
-    public missionActions() {
+    public actions() {
         for (let miner of this.emergencyMiners) {
             this.minerActions(miner);
         }
     }
 
-    public finalizeMission() {
+    public finalize() {
     }
-    public invalidateMissionCache() {
+    public invalidateCache() {
     }
 
     private minerActions(miner: Agent) {
@@ -59,8 +60,17 @@ export class EmergencyMinerMission extends Mission {
         }
 
         miner.memory.donatesEnergy = true;
-        miner.memory.scavanger = RESOURCE_ENERGY;
-        miner.harvest(closest);
+        miner.memory.scavenger = RESOURCE_ENERGY;
+        if (miner.carry.energy < miner.carryCapacity) {
+            miner.harvest(closest);
+        } else {
+            let site = miner.pos.findInRange<ConstructionSite>(FIND_MY_CONSTRUCTION_SITES, 3)[0];
+            if (site) {
+                miner.build(site);
+            } else {
+                miner.harvest(closest);
+            }
+        }
     }
 
     private findMinersBySources() {
@@ -71,4 +81,8 @@ export class EmergencyMinerMission extends Mission {
         }
         return false;
     }
+}
+
+interface EmergencyMinerMemory extends MissionMemory {
+    lastTick: number;
 }

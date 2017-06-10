@@ -1,24 +1,32 @@
-import {Mission} from "./Mission";
+import {Mission, MissionMemory, MissionState} from "./Mission";
 import {Operation} from "../operations/Operation";
-import {Agent} from "./Agent";
+import {Agent} from "../agents/Agent";
+import {Profiler} from "../../Profiler";
+import {RaidAgent} from "../agents/RaidAgent";
 
 interface EnergyStructure extends Structure {
-    pos: RoomPosition
-    energy: number
-    energyCapacity: number
+    pos: RoomPosition;
+    energy: number;
+    energyCapacity: number;
+}
+
+interface RefillMemory extends MissionMemory {
+    cartsLastTick: number;
+    max: number;
+}
+
+interface RefillState extends MissionState {
+    emergencyMode: boolean;
+    empties: EnergyStructure[];
 }
 
 export class RefillMission extends Mission {
 
-    carts: Agent[];
-    emergencyCarts: Agent[];
-    emergencyMode: boolean;
-    empties: EnergyStructure[];
+    private carts: Agent[];
+    private emergencyCarts: Agent[];
 
-    memory: {
-        cartsLastTick: number,
-        max: number
-    };
+    public memory: RefillMemory;
+    public state: RefillState;
 
     /**
      * General-purpose structure refilling. Can be used to refill spawning energy, towers, links, labs, etc.
@@ -30,34 +38,33 @@ export class RefillMission extends Mission {
         super(operation, "refill");
     }
 
-    initMission() {
-        this.emergencyMode = this.memory.cartsLastTick === 0;
+    public init() {
     }
 
-    roleCall() {
+    public update() {
+        this.state.emergencyMode = this.memory.cartsLastTick === 0;
+    }
+
+    public roleCall() {
 
         let max = () => this.room.storage ? 1 : 2;
-        let emergencyMax = () => this.emergencyMode ? 1 : 0;
+        let emergencyMax = () => this.state.emergencyMode ? 1 : 0;
 
         let emergencyBody = () => { return this.workerBody(0, 4, 2); };
         this.emergencyCarts = this.headCount("emergency_" + this.name, emergencyBody, emergencyMax);
 
         let cartBody = () => {
-            if (this.operation.type === "flex") {
-                return this.bodyRatio(0, 2, 1, 1, 16);
-            }
-            else {
-                return this.bodyRatio(0, 2, 1, 1, 10);
-            }
+            return this.bodyRatio(0, 2, 1, 1, 16);
         };
 
-        let memory = { scavanger: RESOURCE_ENERGY };
+        let memory = { scavenger: RESOURCE_ENERGY };
         this.carts = this.headCount("spawnCart", cartBody, max, {prespawn: 50, memory: memory});
         this.memory.cartsLastTick = this.carts.length;
     }
 
-    missionActions() {
+    public actions() {
 
+        Profiler.start("refill.actions");
         for (let cart of this.emergencyCarts) {
             this.spawnCartActions(cart, 0);
         }
@@ -67,22 +74,10 @@ export class RefillMission extends Mission {
             this.spawnCartActions(cart, order);
             order++;
         }
+        Profiler.end("refill.actions");
     }
 
-    spawnCartActions2(cart: Agent, order: number) {
-        let hasLoad = cart.hasLoad();
-        if (!hasLoad) {
-            if (order !== 0 && cart.ticksToLive < 50) {
-                cart.suicide();
-                return;
-            }
-            cart.memory.emptyId = undefined;
-            cart.procureEnergy(this.findNearestEmpty(cart), true);
-            return;
-        }
-    }
-
-    spawnCartActions(cart: Agent, order: number) {
+    private spawnCartActions(cart: Agent, order: number) {
 
         let hasLoad = cart.hasLoad();
         if (!hasLoad) {
@@ -100,7 +95,7 @@ export class RefillMission extends Mission {
             if (cart.carry.energy < cart.carryCapacity * .8) {
                 cart.memory.hasLoad = false;
             } else {
-                cart.idleOffRoad(cart.room.controller);
+                cart.idleOffRoad();
             }
             return;
         }
@@ -118,7 +113,7 @@ export class RefillMission extends Mission {
         // is near to target
         let outcome = cart.transfer(target, RESOURCE_ENERGY);
         if (outcome === OK) {
-            if (cart.carry.energy > target.energyCapacity) {
+            if (cart.carry.energy > target.energyCapacity - target.energy) {
                 cart.memory.emptyId = undefined;
                 target = this.findNearestEmpty(cart, target);
                 if (target && !cart.pos.isNearTo(target)) {
@@ -130,15 +125,15 @@ export class RefillMission extends Mission {
         }
     }
 
-    finalizeMission() {
+    public finalize() {
     }
-    invalidateMissionCache() {
+    public invalidateCache() {
     }
 
-    findNearestEmpty(cart: Agent, pullTarget?: EnergyStructure): EnergyStructure {
+    private findNearestEmpty(cart: Agent, pullTarget?: EnergyStructure): EnergyStructure {
         if (cart.memory.emptyId) {
             let empty = Game.getObjectById<EnergyStructure>(cart.memory.emptyId);
-            if (empty && empty.energy < empty.energyCapacity) {
+            if (empty && empty.energy < empty.energyCapacity - 50) {
                 let rangeToEmpty = cart.pos.getRangeTo(empty);
                 let closestEmpty = cart.pos.findClosestByRange(this.getEmpties());
                 let rangeToClosest = cart.pos.getRangeTo(closestEmpty);
@@ -161,20 +156,21 @@ export class RefillMission extends Mission {
         }
     }
 
-    getEmpties(pullTarget?: EnergyStructure): EnergyStructure[] {
-        if (!this.empties) {
-            this.empties = _.filter(this.room.findStructures<EnergyStructure>(STRUCTURE_SPAWN)
+    private getEmpties(pullTarget?: EnergyStructure): EnergyStructure[] {
+        if (!this.state.empties) {
+            let empties = _.filter(this.room.findStructures<EnergyStructure>(STRUCTURE_SPAWN)
                 .concat(this.room.findStructures<EnergyStructure>(STRUCTURE_EXTENSION)), (s: StructureSpawn) => {
                 return s.energy < s.energyCapacity;
             });
-            this.empties = this.empties.concat(_.filter(this.room.findStructures<EnergyStructure>(STRUCTURE_TOWER),
+            empties = empties.concat(_.filter(this.room.findStructures<EnergyStructure>(STRUCTURE_TOWER),
                 (s: StructureTower) => { return s.energy < s.energyCapacity * .5; }));
+            this.state.empties = empties;
         }
 
         if (pullTarget) {
-            _.pull(this.empties, pullTarget);
+            _.pull(this.state.empties, pullTarget);
         }
 
-        return this.empties;
+        return this.state.empties;
     }
 }

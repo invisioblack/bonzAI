@@ -1,32 +1,48 @@
-import {Mission} from "./Mission";
+import {Mission, MissionMemory, MissionState} from "./Mission";
 import {Operation} from "../operations/Operation";
 import {TransportAnalysis} from "../../interfaces";
 import {helper} from "../../helpers/helper";
-import {empire} from "../../helpers/loopHelper";
 import {RESERVE_AMOUNT, NEED_ENERGY_THRESHOLD, SUPPLY_ENERGY_THRESHOLD} from "../TradeNetwork";
-import {Agent} from "./Agent";
+import {Agent} from "../agents/Agent";
+import {PathMission} from "./PathMission";
+import {empire} from "../Empire";
+import {RoomHelper} from "../RoomHelper";
+import {MemHelper} from "../../helpers/MemHelper";
+import {Profiler} from "../../Profiler";
+import {Traveler} from "../Traveler";
+
+interface UpgradeMemory extends MissionMemory {
+    batteryPosition: RoomPosition;
+    cartCount: number;
+    positionCount: number;
+    roadRepairIds: string[];
+    transportAnalysis: TransportAnalysis;
+    max: number;
+    upgPositions: string;
+    batteryId: string;
+    potency: number;
+}
+
+interface UpgradeState extends MissionState {
+    remoteSpawning: boolean;
+    battery: StoreStructure;
+    potencyPerCreep: number;
+    distanceToSpawn: number;
+}
+
 export class UpgradeMission extends Mission {
 
-    linkUpgraders: Agent[];
-    batterySupplyCarts: Agent[];
-    influxCarts: Agent[];
-    paver: Agent;
+    private linkUpgraders: Agent[];
+    private batterySupplyCarts: Agent[];
+    private influxCarts: Agent[];
+    private batteryId: string;
+    private boost: boolean;
+    private upgraderPositions: RoomPosition[];
+    private pathMission: PathMission;
 
-    battery: StructureContainer | StructureStorage | StructureLink;
-    boost: boolean;
-    allowUnboosted: boolean;
-    remoteSpawning: boolean;
-
-    memory: {
-        batteryPosition: RoomPosition
-        cartCount: number
-        positionCount: number
-        roadRepairIds: string[]
-        transportAnalysis: TransportAnalysis
-        potency: number
-        max: number
-    };
-    private _potencyPerCreep: number;
+    public memory: UpgradeMemory;
+    public state: UpgradeState;
+    public saverMode: boolean;
 
     /**
      * Controller upgrading. Will look for a suitable controller battery (StructureContainer, StructureStorage,
@@ -40,88 +56,109 @@ export class UpgradeMission extends Mission {
     constructor(operation: Operation, boost: boolean, allowSpawn = true, allowUnboosted = true) {
         super(operation, "upgrade", allowSpawn);
         this.boost = boost;
-        this.allowUnboosted = allowUnboosted;
     }
 
-    initMission() {
+    public init() {
         if (!this.memory.cartCount) { this.memory.cartCount = 0; }
-        if (this.spawnGroup.room !== this.room) {
-            this.remoteSpawning = true;
-            this.distanceToSpawn = Game.map.getRoomLinearDistance(this.spawnGroup.room.name, this.room.name);
+
+        let battery = this.findControllerBattery();
+        if (battery) {
+            this.batteryId = battery.id;
         }
-        else {
-            this.distanceToSpawn = this.findDistanceToSpawn(this.room.controller.pos);
+
+        if (Memory.playerConfig.saverMode && this.room.controller.level === 8) {
+            this.saverMode = true;
+            if (this.room.controller.ticksToDowngrade > 100000) {
+                this.operation.removeMission(this);
+                return;
+            }
+        } else {
+
+            this.pathMission = new PathMission(this.operation, this.name + "Path");
+            this.operation.addMissionLate(this.pathMission);
         }
-        this.battery = this.findControllerBattery();
+
+        this.upgraderPositions = this.findUpgraderPositions();
+
     }
 
-    linkUpgraderBody = () => {
+    public update() {
+        // Profiler.end("focus", );
+        // Profiler.start("focus", true, 3);
+        this.state.distanceToSpawn = this.findDistanceToSpawn();
+        this.state.battery = Game.getObjectById<StoreStructure>(this.batteryId);
+        this.updatePathMission();
+    }
+
+    private linkUpgraderBody = () => {
+        if (this.saverMode) { return this.workerBody(1, 1, 1); }
 
         if (this.memory.max !== undefined) {
             return this.workerBody(30, 4, 15);
         }
 
-        if (this.remoteSpawning) {
+        if (this.state.remoteSpawning) {
             return this.workerBody(this.potencyPerCreep, 4, this.potencyPerCreep);
         }
 
         if (this.spawnGroup.maxSpawnEnergy < 800) {
             return this.bodyRatio(2, 1, 1, 1);
-        }
-        else {
+        } else {
             return this.workerBody(this.potencyPerCreep, 4, Math.ceil(this.potencyPerCreep / 2));
         }
     };
 
-    getMax = () => this.findMaxUpgraders(this.totalPotency, this.potencyPerCreep);
+    private getMax = (): number => {
+        return this.findMaxUpgraders(this.totalPotency, this.potencyPerCreep);
+    };
 
-    roleCall() {
+    public roleCall() {
 
+        let max = this.getMax();
+        if (this.room.controller.level === 8 && max > 1) {
+            console.log(`upgrader count error: ${max}, ${this.operation.name}`);
+            console.log(`${this.room}, ${this.spawnGroup.room}`);
+            console.log(`${this.totalPotency}, ${this.potencyPerCreep}, ${this.spawnGroup.maxSpawnEnergy}, ${
+                this.state.remoteSpawning}, ${this.state.potencyPerCreep}`);
+        }
         // memory
         let memory;
-        if (this.boost || empire.network.hasAbundance(RESOURCE_CATALYZED_GHODIUM_ACID)) {
-            memory = {boosts: [RESOURCE_CATALYZED_GHODIUM_ACID], allowUnboosted: this.allowUnboosted};
+        if (true) { //(this.boost) { // || empire.network.hasAbundance(RESOURCE_CATALYZED_GHODIUM_ACID)
+            memory = {boosts: [RESOURCE_CATALYZED_GHODIUM_ACID], allowUnboosted: true};
         }
 
-        if (this.battery instanceof StructureContainer) {
+        if (this.state.battery instanceof StructureContainer) {
             let analysis = this.cacheTransportAnalysis(25, this.totalPotency);
             this.batterySupplyCarts = this.headCount("upgraderCart",
                 () => this.workerBody(0, analysis.carryCount, analysis.moveCount),
-                () => Math.min(analysis.cartsNeeded, 3), { prespawn: this.distanceToSpawn,});
+                () => Math.min(analysis.cartsNeeded, 3), { prespawn: this.state.distanceToSpawn });
         }
 
         this.linkUpgraders = this.headCount("upgrader", this.linkUpgraderBody, this.getMax, {
-            prespawn: this.distanceToSpawn,
-            memory: memory
+            prespawn: this.state.distanceToSpawn,
+            memory: memory,
         } );
-
-        if (this.memory.roadRepairIds && !this.remoteSpawning) {
-            this.paver = this.spawnPaver();
-        }
 
         let maxInfluxCarts = 0;
         let influxMemory;
-        if (this.remoteSpawning) {
+        if (this.state.remoteSpawning) {
             if (this.room.storage && this.room.storage.store.energy < NEED_ENERGY_THRESHOLD
-                && this.spawnGroup.room.storage && this.spawnGroup.room.storage.store.energy > SUPPLY_ENERGY_THRESHOLD) {
+                && this.spawnGroup.room.storage
+                && this.spawnGroup.room.storage.store.energy > SUPPLY_ENERGY_THRESHOLD) {
                 maxInfluxCarts = 10;
                 influxMemory = { originId: this.spawnGroup.room.storage.id };
             }
         }
-        let influxCartBody = () => this.workerBody(0,25,25);
+        let influxCartBody = () => this.workerBody(0, 25, 25);
         this.influxCarts = this.headCount("influxCart", influxCartBody, () => maxInfluxCarts,
             { memory: influxMemory, skipMoveToRoom: true });
     }
 
-    missionActions() {
+    public actions() {
         let index = 0;
         for (let upgrader of this.linkUpgraders) {
             this.linkUpgraderActions(upgrader, index);
             index++;
-        }
-
-        if (this.paver) {
-            this.paverActions(this.paver);
         }
 
         if (this.batterySupplyCarts) {
@@ -133,64 +170,62 @@ export class UpgradeMission extends Mission {
         for (let influxCart of this.influxCarts) {
             this.influxCartActions(influxCart);
         }
-
-        if (this.battery) {
-            let startingPosition: {pos: RoomPosition} = this.room.storage;
-            if (!startingPosition) {
-                startingPosition = this.room.find<StructureSpawn>(FIND_MY_SPAWNS)[0];
-            }
-            if (startingPosition) {
-                this.pavePath(startingPosition, this.battery, 1, true);
-            }
-        }
     }
 
-    finalizeMission() {
+    public finalize() {
     }
 
-    invalidateMissionCache() {
-        if (Math.random() < .01) this.memory.positionCount = undefined;
-        if (Math.random() < .1) this.memory.transportAnalysis = undefined;
+    public invalidateCache() {
+        if (Math.random() < .01) { this.memory.positionCount = undefined; }
+        if (Math.random() < .1) { this.memory.transportAnalysis = undefined; }
+        this.memory.upgPositions = undefined;
     }
 
     private linkUpgraderActions(upgrader: Agent, index: number) {
 
-        let battery = this.room.controller.getBattery();
-        if (!battery) {
+        if (!this.state.battery) {
             upgrader.idleOffRoad(this.flag);
             return; // early
         }
 
-        let outcome;
-        if (battery instanceof StructureContainer && battery.hits < battery.hitsMax * 0.8) {
-            outcome = upgrader.repair(battery);
+        if (this.state.battery instanceof StructureContainer
+            && this.state.battery.hits < this.state.battery.hitsMax * 0.8) {
+            upgrader.repair(this.state.battery);
+        } else {
+            upgrader.upgradeController(this.room.controller);
         }
-        else {
-            outcome = upgrader.upgradeController(this.room.controller);
-        }
-        let myPosition = this.room.controller.getUpgraderPositions()[index];
+        let myPosition = this.findUpgraderPositions()[index];
         if (myPosition) {
             let range = upgrader.pos.getRangeTo(myPosition);
             if (range > 0) {
                 upgrader.travelTo(myPosition, {range: 0});
             }
-        }
-        else {
-            if (upgrader.pos.inRangeTo(battery, 3)) {
-                upgrader.yieldRoad(battery);
-            }
-            else {
-                upgrader.travelTo(battery);
+        } else {
+            if (upgrader.pos.inRangeTo(this.state.battery, 3)) {
+                upgrader.yieldRoad(this.state.battery);
+            } else {
+                upgrader.travelTo(this.state.battery);
             }
         }
 
         if (upgrader.carry[RESOURCE_ENERGY] < upgrader.carryCapacity / 4) {
-            upgrader.withdraw(battery, RESOURCE_ENERGY);
+            upgrader.withdraw(this.state.battery, RESOURCE_ENERGY);
         }
     }
 
     private findControllerBattery() {
-        let battery = this.room.controller.getBattery();
+        if (!this.memory.batteryPosition) {
+            let spawn = this.room.find<StructureSpawn>(FIND_MY_SPAWNS)[0];
+            if (!spawn) { return; }
+            this.memory.batteryPosition = this.findBatteryPosition(spawn);
+            if (!this.memory.batteryPosition) { return; }
+        }
+
+        let position = helper.deserializeRoomPosition(this.memory.batteryPosition);
+
+        let battery = _(position.lookFor<Structure>(LOOK_STRUCTURES)
+            .filter(x => x instanceof StructureContainer || x instanceof StructureLink))
+            .head();
 
         if (battery instanceof StructureContainer && this.room.controller.level >= 5) {
             battery.destroy();
@@ -203,18 +238,13 @@ export class UpgradeMission extends Mission {
         }
 
         if (!battery) {
-            let spawn = this.room.find<StructureSpawn>(FIND_MY_SPAWNS)[0];
-            if (!spawn) return;
-            if (!this.memory.batteryPosition) {
-                this.memory.batteryPosition = this.findBatteryPosition(spawn);
-                if (!this.memory.batteryPosition) return;
-            }
+            if (this.room.hostiles.length > 0) { return; }
             let structureType = STRUCTURE_LINK;
             if (this.room.controller.level < 5) {
                 structureType = STRUCTURE_CONTAINER;
             }
-            let position = helper.deserializeRoomPosition(this.memory.batteryPosition);
-            if (position.lookFor(LOOK_CONSTRUCTION_SITES).length > 0) return;
+
+            if (position.lookFor(LOOK_CONSTRUCTION_SITES).length > 0) { return; }
             let outcome = position.createConstructionSite(structureType);
             console.log(`UPGRADE: placing battery in ${this.operation.name}, outcome: ${outcome}, ${position}`);
         }
@@ -223,19 +253,34 @@ export class UpgradeMission extends Mission {
     }
 
     private findBatteryPosition(spawn: StructureSpawn): RoomPosition {
-        let path = this.findPavedPath(spawn.pos, this.room.controller.pos, 1);
-        let positionsInRange = this.room.controller.pos.findInRange(path, 3);
+
+        let controllerPos = this.room.controller.pos;
+        let currentBattery = controllerPos.findInRange(this.room.findStructures<Structure>(STRUCTURE_LINK), 3)[0];
+        if (currentBattery) {
+            return currentBattery.pos;
+        }
+
+        currentBattery = _(controllerPos.findInRange(this.room.findStructures<Structure>(STRUCTURE_CONTAINER), 3))
+            .filter(x => !x.pos.lookFor(LOOK_FLAGS)[0])
+            .head();
+        if (currentBattery) {
+            return currentBattery.pos;
+        }
+
+        let ret = Traveler.findTravelPath(spawn.pos, this.room.controller.pos);
+        let positionsInRange = this.room.controller.pos.findInRange(ret.path, 3);
         positionsInRange = _.sortBy(positionsInRange, (pos: RoomPosition) => pos.getRangeTo(spawn.pos));
 
         let mostSpots = 0;
         let bestPositionSoFar;
         for (let position of positionsInRange) {
             let sourcesInRange = position.findInRange(FIND_SOURCES, 2);
-            if (sourcesInRange.length > 0) continue;
+            if (sourcesInRange.length > 0) { continue; }
             let openSpotCount = _.filter(position.openAdjacentSpots(true),
                 (pos: RoomPosition) => pos.getRangeTo(this.room.controller) <= 3).length;
-            if (openSpotCount >= 5) return position;
-            else if (openSpotCount > mostSpots) {
+            if (openSpotCount >= 5) {
+                return position;
+            } else if (openSpotCount > mostSpots) {
                 mostSpots = openSpotCount;
                 bestPositionSoFar = position;
             }
@@ -243,14 +288,18 @@ export class UpgradeMission extends Mission {
 
         if (bestPositionSoFar) {
             return bestPositionSoFar;
-        }
-        else {
+        } else {
             console.log(`couldn't find controller battery position in ${this.operation.name}`);
         }
     }
 
     private batterySupplyCartActions(cart: Agent) {
-        let controllerBattery = this.battery as StructureContainer;
+        let controllerBattery = this.state.battery as StructureContainer;
+        if (!controllerBattery) {
+            cart.idleOffRoad();
+            return;
+        }
+
         let hasLoad = cart.hasLoad();
         if (!hasLoad) {
             cart.procureEnergy(controllerBattery);
@@ -289,8 +338,7 @@ export class UpgradeMission extends Mission {
             if (influxCart.pos.isNearTo(originStorage)) {
                 influxCart.withdraw(originStorage, RESOURCE_ENERGY);
                 influxCart.travelTo(this.room.storage, {ignoreRoads: true});
-            }
-            else {
+            } else {
                 influxCart.travelTo(originStorage, {ignoreRoads: true});
             }
             return;
@@ -299,81 +347,161 @@ export class UpgradeMission extends Mission {
         if (influxCart.pos.isNearTo(this.room.storage)) {
             influxCart.transfer(this.room.storage, RESOURCE_ENERGY);
             influxCart.travelTo(originStorage, {ignoreRoads: true});
-        }
-        else {
+        } else {
             influxCart.travelTo(this.room.storage, {ignoreRoads: true});
         }
     }
 
     private findMaxUpgraders(totalPotency: number, potencyPerCreep: number): number {
-        if (!this.battery) return 0;
+        if (!this.state.battery) { return 0; }
 
         if (this.memory.max !== undefined) {
             console.log(`overriding max in ${this.operation.name}`);
             return this.memory.max;
         }
 
-        let max = Math.min(Math.floor(totalPotency / potencyPerCreep), 5);
-        if (this.room.controller.getUpgraderPositions()) {
-            max = Math.min(this.room.controller.getUpgraderPositions().length, max)
+        let max = Math.min(Math.ceil(totalPotency / potencyPerCreep), 5);
+        if (this.findUpgraderPositions()) {
+            max = Math.min(this.findUpgraderPositions().length, max);
         }
 
-        return max
+        return max;
     }
 
     get potencyPerCreep(): number {
-        if (!this._potencyPerCreep) {
+        if (!this.state.potencyPerCreep) {
             let potencyPerCreep;
-            if (this.remoteSpawning) {
-                potencyPerCreep = Math.min(this.totalPotency, 23)
-            }
-            else {
+            if (this.state.remoteSpawning) {
+                potencyPerCreep = Math.min(this.totalPotency, 23);
+            } else {
                 let unitCost = 125;
-                potencyPerCreep = Math.min(Math.floor((this.spawnGroup.maxSpawnEnergy - 200) / unitCost), 30, this.totalPotency);
+                let maxLocalPotency = Math.floor((this.spawnGroup.maxSpawnEnergy - 200) / unitCost);
+                potencyPerCreep = Math.min(maxLocalPotency, 30, this.totalPotency);
             }
-            this._potencyPerCreep = potencyPerCreep;
+            this.state.potencyPerCreep = potencyPerCreep;
         }
-        return this._potencyPerCreep;
+        return this.state.potencyPerCreep;
     }
 
     get totalPotency(): number {
-        if (!this.battery || this.room.hostiles.length > 0) return 0;
+        if (!this.state.battery || this.room.hostiles.length > 0) { return 0; }
 
-        if (!this.memory.potency || Game.time % 10 === 0) {
-            if (this.room.controller.level === 8) {
-                if (this.room.storage && this.room.storage.store.energy > NEED_ENERGY_THRESHOLD) {
-                    return 15;
-                }
-                else {
-                    return 1;
-                }
-            }
+        if (this.memory.potency !== undefined) {
+            // manual override
+            return this.memory.potency;
+        }
 
-            if (this.room.find(FIND_MY_CONSTRUCTION_SITES).length > 0 &&
-                (!this.room.storage || this.room.storage.store.energy < 50000)) {
+        if (this.room.controller.level === 8) {
+            // cpu saving mechanism
+            if (this.saverMode) {
                 return 1;
-            }
-
-            let storageCapacity;
-            if (this.room.storage) {
-                storageCapacity = Math.floor(this.room.storage.store.energy / 1500);
-            }
-
-            if (this.battery instanceof StructureLink && this.room.storage) {
-                let cooldown = this.battery.pos.getRangeTo(this.room.storage) + 3;
-                let linkCount = this.room.storage.pos.findInRange(this.room.findStructures<StructureLink>(STRUCTURE_LINK), 2).length;
-                return Math.min(Math.floor(((LINK_CAPACITY * .97) * linkCount) / cooldown), storageCapacity);
-            }
-            else if (this.battery instanceof StructureContainer) {
-                if (this.room.storage) return storageCapacity;
-                return this.room.find(FIND_SOURCES).length * 10;
-            }
-            else {
-                console.log(`unrecognized controller battery type in ${this.operation.name}, ${this.battery.structureType}`);
-                return 0;
+            } else if (this.room.storage && this.room.storage.store.energy > NEED_ENERGY_THRESHOLD) {
+                return 15;
+            } else {
+                return 1;
             }
         }
 
-        return this.memory.potency;
+        // less upgraders while builders are active
+        if (this.room.find(FIND_MY_CONSTRUCTION_SITES).length > 0 &&
+            (!this.room.storage || this.room.storage.store.energy < 50000)) {
+            return 1;
+        }
+
+        let storageCapacity;
+        if (this.room.storage) {
+            storageCapacity = Math.floor(this.room.storage.store.energy / 1500);
+        }
+
+        if (this.state.battery instanceof StructureLink && this.room.storage) {
+            let cooldown = this.state.battery.pos.getRangeTo(this.room.storage) + 3;
+            let linkCount = this.room.storage.pos.findInRange(
+                this.room.findStructures<StructureLink>(STRUCTURE_LINK), 2).length;
+            let maxTransferable = Math.floor(((LINK_CAPACITY * .97) * linkCount) / cooldown);
+            return Math.min(maxTransferable, storageCapacity);
+        } else if (this.state.battery instanceof StructureContainer) {
+            if (this.room.storage) { return storageCapacity; }
+            return this.room.find(FIND_SOURCES).length * 10;
+        } else {
+            console.log(`unrecognized controller battery type in ${this.operation.name}, ${
+                this.state.battery}`);
+            return 0;
+        }
+    }
+
+    /**
+     * Positions on which it is viable for an upgrader to stand relative to battery/controller
+     * @returns {Array}
+     */
+    private findUpgraderPositions(): RoomPosition[] {
+        if (!this.state.battery) { return; }
+
+        if (this.upgraderPositions) {
+            return this.upgraderPositions;
+        }
+
+        // invalidates randomly
+        if (this.memory.upgPositions) {
+            this.upgraderPositions = RoomHelper.deserializeIntPositions(this.memory.upgPositions, this.room.name);
+            return this.upgraderPositions;
+        }
+
+        let positions = [];
+        for (let i = 1; i <= 8; i++) {
+            let position = this.state.battery.pos.getPositionAtDirection(i);
+            if (!position.isPassible(true) || !position.inRangeTo(this.room.controller, 3)
+                || position.lookFor(LOOK_STRUCTURES).length > 0
+                || position.lookFor(LOOK_CONSTRUCTION_SITES).length > 0) { continue; }
+            positions.push(position);
+        }
+        this.memory.upgPositions = RoomHelper.serializeIntPositions(positions);
+        return positions;
+    }
+
+    /**
+     * Looks for structure to be used as an energy holder for upgraders
+     * @returns { StructureLink | StructureStorage | StructureContainer }
+     */
+    private getBattery(structureType?: string): StoreStructure {
+        let find = () => {
+            this.memory.upgPositions = undefined;
+            return _(this.room.controller.pos.findInRange(FIND_STRUCTURES, 3))
+                .filter((structure: Structure) => {
+                    if (structureType) {
+                        return structure.structureType === structureType;
+                    } else {
+                        if (structure.structureType === STRUCTURE_CONTAINER
+                            || structure.structureType === STRUCTURE_LINK) {
+                            // mining from nearby sources interfere with upgraders
+                            let sourcesInRange = structure.pos.findInRange(FIND_SOURCES, 2);
+                            return sourcesInRange.length === 0;
+                        }
+                    }})
+                .head() as StoreStructure;
+        };
+
+        return MemHelper.findObject<StoreStructure>(this, "battery", find);
+    }
+
+    private updatePathMission() {
+        if (!this.state.battery) { return; }
+        let startingPosition: {pos: RoomPosition} = this.room.storage;
+        if (!startingPosition) {
+            startingPosition = this.room.find<StructureSpawn>(FIND_MY_SPAWNS)[0];
+        }
+        if (startingPosition) {
+            this.pathMission.updatePath(startingPosition.pos, this.state.battery.pos, 0);
+        }
+    }
+
+    protected findDistanceToSpawn(): number {
+        if (this.spawnGroup.room !== this.room) {
+            this.state.remoteSpawning = true;
+            return Game.map.getRoomLinearDistance(this.spawnGroup.room.name, this.room.name) * 50;
+        } else {
+            return super.findDistanceToSpawn(this.room.controller.pos);
+        }
     }
 }
+
+type StoreStructure = StructureStorage | StructureTerminal | StructureContainer;

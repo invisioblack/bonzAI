@@ -1,58 +1,57 @@
-import {Mission} from "./Mission";
-import {Agent} from "./Agent";
+import {Mission, MissionMemory} from "./Mission";
+import {Agent} from "../agents/Agent";
+
+interface PaverMemory extends MissionMemory {
+    potency: number;
+}
+
 export class PaverMission extends Mission {
 
-    pavers: Agent[];
-    potency: number;
+    private pavers: Agent[];
+    public memory: PaverMemory;
 
-    constructor(operation) {
+    constructor(operation, allowSpawn: boolean) {
         super(operation, "paver");
+        this.allowSpawn = allowSpawn;
     }
 
-    initMission() {
-        if (!this.hasVision) return; // early
-
-        if (!this.memory.potency) {
-            let roads = this.room.findStructures(STRUCTURE_ROAD) as StructureRoad[];
-            let sum = 0;
-            for (let road of roads) {
-                sum += road.hitsMax;
-            }
-            this.memory.potency = Math.max(Math.ceil(sum / 500000), 1);
-        }
-        this.potency = this.memory.potency;
+    public init() {
+        if (!this.state.hasVision) { return; }
     }
 
-    roleCall() {
+    public update() {
+    }
+
+    public roleCall() {
 
         let max = () => this.room && this.room.findStructures(STRUCTURE_ROAD).length > 0 ? 1 : 0;
         let body = () => {
             if (this.spawnGroup.maxSpawnEnergy <= 550) {
                 return this.bodyRatio(1, 3, 1, 1);
-            }
-            else {
-                return this.workerBody(this.potency, 3 * this.potency, 2 * this.potency);
+            } else {
+                let potency = this.findPotency();
+                return this.workerBody(potency, 3 * potency, 2 * potency);
             }
         };
         this.pavers = this.headCount(this.name, body, max, {prespawn: 10} );
     }
 
-    missionActions() {
+    public actions() {
         for (let paver of this.pavers) {
             this.deprecatedPaverActions(paver);
         }
     }
 
-    finalizeMission() {
+    public finalize() {
     }
-    invalidateMissionCache() {
-        if (Math.random() < .01) this.memory.potency = undefined;
+    public invalidateCache() {
+        if (Math.random() < .01) { this.memory.potency = undefined; }
     }
 
     private deprecatedPaverActions(paver: Agent) {
 
-        let fleeing = paver.fleeHostiles();
-        if (fleeing) return; // early
+        let fleeing = paver.fleeHostiles(4);
+        if (fleeing) { return; } // early
 
         let withinRoom = paver.pos.roomName === this.flag.pos.roomName;
         if (!withinRoom) {
@@ -61,7 +60,7 @@ export class PaverMission extends Mission {
         }
 
         // I'm in the missionRoom
-        paver.memory.scavanger = RESOURCE_ENERGY;
+        paver.memory.scavenger = RESOURCE_ENERGY;
         let hasLoad = paver.hasLoad();
         if (!hasLoad) {
             paver.procureEnergy();
@@ -86,7 +85,6 @@ export class PaverMission extends Mission {
             return;
         }
 
-
         // and I have a target
         let range = paver.pos.getRangeTo(target);
         if (range > 3) {
@@ -107,8 +105,8 @@ export class PaverMission extends Mission {
     private repairContainers(paver: Agent): boolean {
         let disrepairedContainer = paver.rememberStructure(() => {
             return _(this.room.findStructures(STRUCTURE_CONTAINER))
-                .filter((c: StructureContainer) => {return c.hits < c.hitsMax * .5
-                    && !c.pos.isNearTo(c.room.find<Mineral>(FIND_MINERALS)[0])})
+                .filter((c: StructureContainer) => { return c.hits < c.hitsMax * .5
+                    && !c.pos.isNearTo(c.room.find<Mineral>(FIND_MINERALS)[0]); })
                 .head() as StructureContainer;
         }, (s: Structure) => {
             return s.hits === s.hitsMax;
@@ -118,14 +116,25 @@ export class PaverMission extends Mission {
             if (paver.pos.isNearTo(disrepairedContainer)) {
                 paver.repair(disrepairedContainer);
                 paver.yieldRoad(disrepairedContainer);
-            }
-            else {
+            } else {
                 paver.travelTo(disrepairedContainer);
             }
             return true;
-        }
-        else {
+        } else {
             return false;
         }
+    }
+
+    private findPotency(): number {
+        if (!this.memory.potency) {
+            if (!this.room) { return; }
+            let roads = this.room.findStructures(STRUCTURE_ROAD) as StructureRoad[];
+            let sum = 0;
+            for (let road of roads) {
+                sum += road.hitsMax;
+            }
+            this.memory.potency = Math.max(Math.ceil(sum / 500000), 1);
+        }
+        return this.memory.potency;
     }
 }

@@ -1,22 +1,21 @@
 import {Mission} from "./Mission";
 import {Operation} from "../operations/Operation";
-import {Agent} from "./Agent";
+import {Agent} from "../agents/Agent";
 export class DemolishMission extends Mission {
 
-    demolishers: Agent[];
-    scavangers: Agent[];
+    private demolishers: Agent[];
+    private scavangers: Agent[];
 
-    demoFlags: Flag[] = [];
-    demoStructures: Structure[] = [];
-    potency: number;
-    storeStructure: StructureContainer|StructureStorage|StructureTerminal;
+    private demoFlags: Flag[] = [];
+    private demoStructures: Structure[];
+    private storeStructure: StructureContainer|StructureStorage|StructureTerminal;
 
     /**
-     * Spawn a demolisher when there are flags that match his pattern ("Flag + n"), he will visit those flags and remove the
+     * Spawn a demolisher when there are flags that match his pattern ("Flag + n"), he will visit those flags and remove
      * structures underneath. This pattern happens to be the default flag pattern used by the game UI, be careful
      * @param operation
      * @param potency
-     * @param storeStructure When a storeStructure is provided, it will spawn a scavanger to deliver energy
+     * @param storeStructure When a storeStructure is provided, it will spawn a scavenger to deliver energy
      * @param allowSpawn
      */
 
@@ -24,18 +23,21 @@ export class DemolishMission extends Mission {
         super(operation, "demolish");
     }
 
-    initMission() {
+    public init() {
+    }
+
+    public update() {
+        this.demoStructures = [];
 
         for (let i = 0; i <= 50; i++ ) {
             let flag = Game.flags["Flag" + i];
-            if (!flag) continue;
+            if (!flag) { continue; }
             this.demoFlags.push(flag);
-            if (!flag.room) continue;
+            if (!flag.room) { continue; }
             let structure = flag.pos.lookFor<Structure>(LOOK_STRUCTURES)[0];
             if (structure) {
                 this.demoStructures.push(structure);
-            }
-            else {
+            } else {
                 flag.remove();
             }
         }
@@ -43,34 +45,33 @@ export class DemolishMission extends Mission {
         this.storeStructure = this.checkStoreStructure();
     }
 
-    getMaxDemolishers = () => {
+    private getMaxDemolishers = () => {
         if (this.demoFlags.length === 0) { return 0; }
         if (this.memory.max !== undefined) { return this.memory.max; }
         return 1;
     };
-    getMaxScavengers = () => this.demoFlags.length > 0 && this.storeStructure ? 1 : 0;
+    private getMaxScavengers = () => this.demoFlags.length > 0 && this.storeStructure ? 1 : 0;
 
-
-    roleCall() {
+    public roleCall() {
 
         this.demolishers = this.headCount("demolisher", () => this.bodyRatio(1, 0, 1, 1), this.getMaxDemolishers);
-        this.scavangers = this.headCount("scavanger", () => this.bodyRatio(0, 1, 1, 1), this.getMaxScavengers);
+        this.scavangers = this.headCount("scavenger", () => this.bodyRatio(0, 1, 1, 1), this.getMaxScavengers);
     }
 
-    missionActions() {
+    public actions() {
         for (let demolisher of this.demolishers) {
             this.demolisherActions(demolisher);
         }
 
-        for (let scavanger of this.scavangers) {
-            this.scavangerActions(scavanger, _.head(this.demolishers));
+        for (let scavenger of this.scavangers) {
+            this.scavengerActions(scavenger, _.head(this.demolishers));
         }
     }
 
-    finalizeMission() {
+    public finalize() {
     }
 
-    invalidateMissionCache() {
+    public invalidateCache() {
     }
 
     private demolisherActions(demolisher: Agent) {
@@ -93,62 +94,62 @@ export class DemolishMission extends Mission {
         demolisher.idleOffRoad(this.flag);
     }
 
-    private scavangerActions(scavanger: Agent, demolisher: Agent) {
+    private scavengerActions(scavenger: Agent, demolisher: Agent) {
 
-        if (!demolisher || scavanger.room !== demolisher.room) {
+        if (!demolisher || scavenger.room !== demolisher.room) {
             if (this.demoFlags.length > 0) {
-                scavanger.travelTo(this.demoFlags[0])
+                scavenger.travelTo(this.demoFlags[0]);
             } else {
-                scavanger.idleOffRoad();
+                scavenger.idleOffRoad();
             }
             return;
         }
 
-        let hasLoad = scavanger.hasLoad();
+        let hasLoad = scavenger.hasLoad();
         if (!hasLoad) {
 
-            let resource = this.findScavangerResource(scavanger, demolisher);
+            let resource = this.findScavangerResource(scavenger, demolisher);
             if (resource) {
-                if (scavanger.pos.isNearTo(resource)) {
-                    scavanger.pickup(resource);
+                if (scavenger.pos.isNearTo(resource)) {
+                    scavenger.pickup(resource);
                 } else {
-                    scavanger.travelTo(resource);
+                    scavenger.travelTo(resource);
                 }
             } else {
-                scavanger.travelTo(demolisher);
+                scavenger.travelTo(demolisher);
             }
             return; // early
         }
 
         if (_.sum(this.storeStructure.store) === this.storeStructure.storeCapacity) {
-            scavanger.idleOffRoad(demolisher);
+            scavenger.idleOffRoad(demolisher);
             return; // early
         }
 
-        if (scavanger.pos.isNearTo(this.storeStructure)) {
-            scavanger.transfer(this.storeStructure, RESOURCE_ENERGY);
-            scavanger.memory.resourceId = undefined;
+        if (scavenger.pos.isNearTo(this.storeStructure)) {
+            scavenger.transfer(this.storeStructure, RESOURCE_ENERGY);
+            scavenger.memory.resourceId = undefined;
         } else {
-            scavanger.travelTo(this.storeStructure);
+            scavenger.travelTo(this.storeStructure);
         }
 
     }
 
-    private findScavangerResource(scavanger: Agent, demolisher: Agent): Resource {
-        if (scavanger.memory.resourceId) {
-            let resource = Game.getObjectById(scavanger.memory.resourceId) as Resource;
+    private findScavangerResource(scavenger: Agent, demolisher: Agent): Resource {
+        if (scavenger.memory.resourceId) {
+            let resource = Game.getObjectById(scavenger.memory.resourceId) as Resource;
             if (resource) {
                 return resource;
             } else {
-                scavanger.memory.resourceId = undefined;
-                return this.findScavangerResource(scavanger, demolisher);
+                scavenger.memory.resourceId = undefined;
+                return this.findScavangerResource(scavenger, demolisher);
             }
         } else {
             let resources = _.filter(demolisher.room.find(FIND_DROPPED_RESOURCES),
                 (r: Resource) => r.resourceType === RESOURCE_ENERGY );
-            let closest = scavanger.pos.findClosestByRange(resources) as Resource;
+            let closest = scavenger.pos.findClosestByRange(resources) as Resource;
             if (closest) {
-                scavanger.memory.resourceId = closest.id;
+                scavenger.memory.resourceId = closest.id;
                 return closest;
             }
         }
@@ -161,7 +162,7 @@ export class DemolishMission extends Mission {
             let storeStructure = _(flag.pos.lookFor(LOOK_STRUCTURES))
                 .filter((s: any) => s.store !== undefined)
                 .head() as StructureContainer | StructureStorage | StructureTerminal;
-            if (storeStructure) return storeStructure;
+            if (storeStructure) { return storeStructure; }
         }
     }
 }

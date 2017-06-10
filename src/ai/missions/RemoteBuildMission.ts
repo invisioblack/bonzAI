@@ -1,12 +1,11 @@
 import {Mission} from "./Mission";
 import {Operation} from "../operations/Operation";
-import {Agent} from "./Agent";
+import {Agent} from "../agents/Agent";
 export class RemoteBuildMission extends Mission {
 
-    builders: Agent[];
-    construction: ConstructionSite[];
-    recycleWhenDone: boolean;
-    private boost: boolean;
+    private builders: Agent[];
+    private construction: ConstructionSite[];
+    private recycleWhenDone: boolean;
 
     /**
      * Builds construction in remote locations, can recycle self when finished
@@ -21,49 +20,51 @@ export class RemoteBuildMission extends Mission {
         this.allowSpawn = allowSpawn;
     }
 
-    initMission() {
-        if (!this.hasVision) {
-            return; // early
+    public init() {
+        if (!this.allowSpawn) {
+            this.operation.removeMission(this);
         }
+    }
 
+    public update() {
+        if (!this.state.hasVision) { return; }
         this.construction = this.room.find<ConstructionSite>(FIND_MY_CONSTRUCTION_SITES);
     }
 
-    roleCall() {
+    public roleCall() {
         let maxBuilders = () => this.construction && this.construction.length > 0 ? 1 : 0;
         let getBody = () => {
             return this.bodyRatio(1, 1, 1, .8, 10);
         };
         let memory;
-        if (this.memory.activateBoost || (this.room.controller && this.room.controller.my)) {
+        if (this.memory.activateBoost) {
             memory = { boosts: [RESOURCE_CATALYZED_LEMERGIUM_ACID], allowUnboosted: true};
         }
         this.builders = this.headCount("remoteBuilder", getBody, maxBuilders, {memory: memory});
     }
 
-    missionActions() {
+    public actions() {
         for (let builder of this.builders) {
             if (!this.waypoints && this.recycleWhenDone && this.construction.length === 0) {
                 this.recycleBuilder(builder);
-            }
-            else {
+            } else {
                 this.builderActions(builder);
             }
         }
     }
 
-    finalizeMission() {
+    public finalize() {
     }
 
-    invalidateMissionCache() {
+    public invalidateCache() {
     }
 
     private builderActions(builder: Agent) {
 
         let fleeing = builder.fleeHostiles();
-        if (fleeing) return; // early
+        if (fleeing) { return; } // early
 
-        if (!this.hasVision) {
+        if (!this.state.hasVision) {
             if (!builder.pos.isNearTo(this.flag)) {
                 builder.travelTo(this.flag);
             }
@@ -87,8 +88,7 @@ export class RemoteBuildMission extends Mission {
         if (builder.pos.inRangeTo(closest, 3)) {
             builder.build(closest);
             builder.yieldRoad(closest);
-        }
-        else {
+        } else {
             builder.travelTo(closest);
         }
     }
@@ -98,17 +98,13 @@ export class RemoteBuildMission extends Mission {
         if (builder.carry.energy > 0 && spawn.room.storage) {
             if (builder.pos.isNearTo(spawn.room.storage)) {
                 builder.transfer(spawn.room.storage, RESOURCE_ENERGY);
-            }
-            else {
+            } else {
                 builder.travelTo(spawn.room.storage);
             }
-        }
-        else {
-            let spawn = this.spawnGroup.spawns[0];
+        } else {
             if (builder.pos.isNearTo(spawn)) {
                 spawn.recycleCreep(builder.creep);
-            }
-            else {
+            } else {
                 builder.travelTo(spawn);
             }
         }
@@ -116,7 +112,7 @@ export class RemoteBuildMission extends Mission {
 
     private findConstruction(builder: Agent): ConstructionSite {
         if (builder.memory.siteId) {
-            let site = Game.getObjectById<ConstructionSite>(builder.memory.siteId)
+            let site = Game.getObjectById<ConstructionSite>(builder.memory.siteId);
             if (site) {
                 return site;
             } else {

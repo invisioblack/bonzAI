@@ -7,23 +7,24 @@ import {GeologyMission} from "../missions/GeologyMission";
 import {LairMission} from "../missions/LairMission";
 import {EnhancedBodyguardMission} from "../missions/EnhancedBodyguardMission";
 import {InvaderGuru} from "../missions/InvaderGuru";
-import {MAX_HARVEST_DISTANCE, MAX_HARVEST_PATH} from "../../config/constants";
+import {MAX_HARVEST_DISTANCE, MAX_HARVEST_PATH, OperationPriority} from "../../config/constants";
 export class KeeperOperation extends Operation {
+    private invaderGuru: InvaderGuru;
 
     /**
-     * Remote mining, spawns Scout if there is no vision, spawns a MiningMission for each source in the missionRoom. Can also
-     * mine minerals from core rooms
+     * Remote mining, spawns Scout if there is no vision, spawns a MiningMission for each source in the missionRoom. Can
+     * also mine minerals from core rooms
      * @param flag
      * @param name
      * @param type
-     * @param empire
      */
 
     constructor(flag: Flag, name: string, type: string) {
         super(flag, name, type);
+        this.priority = OperationPriority.High;
     }
 
-    initOperation() {
+    public init() {
 
         this.initRemoteSpawn(MAX_HARVEST_DISTANCE, 8, 50);
         if (this.remoteSpawn) {
@@ -34,27 +35,29 @@ export class KeeperOperation extends Operation {
         }
 
         this.addMission(new ScoutMission(this));
-        let invaderGuru = new InvaderGuru(this);
-        invaderGuru.init();
-        this.addMission(new EnhancedBodyguardMission(this, invaderGuru));
-        this.addMission(new LairMission(this, invaderGuru));
+        if (!this.state.hasVision) { return; } // early
 
-        if (!this.hasVision) return; // early
+        this.invaderGuru = new InvaderGuru(this);
+        this.invaderGuru.init();
+        this.addMission(new EnhancedBodyguardMission(this, this.invaderGuru));
+        this.addMission(new LairMission(this, this.invaderGuru));
 
-        for (let i = 0; i < this.sources.length; i++) {
-            if (this.sources[i].pos.lookFor(LOOK_FLAGS).length > 0) continue;
-            this.addMission(new MiningMission(this, "miner" + i, this.sources[i]));
-        }
+        MiningMission.Add(this, false);
 
         this.addMission(new RemoteBuildMission(this, true));
 
-        if (this.mineral.pos.lookFor(LOOK_FLAGS).length === 0) {
+        if (this.state.mineral.pos.lookFor(LOOK_FLAGS).length === 0) {
             this.addMission(new GeologyMission(this));
         }
     }
 
-    finalizeOperation() {
+    public update() {
+        this.initRemoteSpawn(MAX_HARVEST_DISTANCE, 8, 50);
+        this.invaderGuru.update();
     }
-    invalidateOperationCache() {
+
+    public finalize() {
+    }
+    public invalidateCache() {
     }
 }

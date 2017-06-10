@@ -1,13 +1,13 @@
 import {Guru} from "./Guru";
 import {Operation} from "../operations/Operation";
-import {HostileAgent} from "./HostileAgent";
+import {HostileAgent} from "../agents/HostileAgent";
 export class InvaderGuru extends Guru {
 
     public invaders: HostileAgent[] = [];
     public invadersPresent: boolean;
     public hasVision = false;
 
-    memory: {
+    public memory: {
         invaderProbable: boolean
         invaderTrack: {
             energyHarvested: number,
@@ -21,6 +21,18 @@ export class InvaderGuru extends Guru {
     }
 
     public init() {
+        super.init();
+        if (!this.memory.invaderTrack) {
+            this.memory.invaderTrack = {
+                energyHarvested: 0,
+                tickLastSeen: Game.time,
+                energyPossible: 0,
+            };
+        }
+    }
+
+    public update() {
+        super.update();
         if (!this.room) { return; }
         this.hasVision = true;
         for (let creep of _.filter(this.room.hostiles, c => c.owner.username === "Invader")) {
@@ -38,13 +50,6 @@ export class InvaderGuru extends Guru {
     get invaderProbable(): boolean { return this.memory.invaderProbable; }
 
     private trackEnergyTillInvader() {
-        if (!this.memory.invaderTrack) {
-            this.memory.invaderTrack = {
-                energyHarvested: 0,
-                tickLastSeen: Game.time,
-                energyPossible: 0 };
-        }
-
         let memory = this.memory.invaderTrack;
 
         let harvested = 0;
@@ -62,14 +67,11 @@ export class InvaderGuru extends Guru {
 
         if (sources.length === 3) {
             this.memory.invaderProbable = memory.energyHarvested > 65000;
-        }
-        else if (sources.length === 2 && Game.time - memory.tickLastSeen < 20000) {
+        } else if (sources.length === 2 && Game.time - memory.tickLastSeen < 20000) {
             this.memory.invaderProbable = memory.energyHarvested > 75000;
-        }
-        else if (sources.length === 1 && Game.time - memory.tickLastSeen < 20000) {
+        } else if (sources.length === 1 && Game.time - memory.tickLastSeen < 20000) {
             this.memory.invaderProbable = memory.energyHarvested > 90000;
-        }
-        else {
+        } else {
             this.memory.invaderProbable = false;
         }
 

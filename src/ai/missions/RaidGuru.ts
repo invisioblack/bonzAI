@@ -1,38 +1,40 @@
 import {Guru} from "./Guru";
-import {RaidData, RaidCache} from "../../interfaces";
+import {RaidCache} from "../../interfaces";
 import {SpawnGroup} from "../SpawnGroup";
 import {helper} from "../../helpers/helper";
-import {notifier} from "../../notifier";
-import {empire} from "../../helpers/loopHelper";
+import {Notifier} from "../../notifier";
 import {Traveler} from "../Traveler";
 import {WorldMap} from "../WorldMap";
 import {Operation} from "../operations/Operation";
+import {empire} from "../Empire";
 export class RaidGuru extends Guru {
 
-    raidRoom: Room;
-    raidRoomName: string;
-    raidCreeps: Creep[] = [];
-    injuredCreeps: Creep[] = [];
-    cache: RaidCache;
-    spawnGroup: SpawnGroup;
+    public raidRoom: Room;
+    public raidRoomName: string;
+    public raidCreeps: Creep[] = [];
+    public injuredCreeps: Creep[] = [];
+    public cache: RaidCache;
+    public spawnGroup: SpawnGroup;
 
     constructor(operation: Operation) {
         super(operation, "raidGuru");
     }
 
     get structures() {
-        if (!this.raidRoom) return;
+        if (!this.raidRoom) { return; }
         return this.raidRoom.structures;
     }
 
     get isInitiaized(): boolean { return this.cache !== undefined; }
-    get fallbackPos(): RoomPosition { if (this.cache) { return helper.deserializeRoomPosition(this.cache.fallbackPos); } }
+    get fallbackPos(): RoomPosition {
+        if (this.cache) { return helper.deserializeRoomPosition(this.cache.fallbackPos); }
+    }
     get expectedDamage(): number { if (this.cache) { return this.cache.expectedDamage; }}
     get avgWallHits(): number { if (this.cache) { return this.cache.avgWallHits; }}
-    get matrix(): CostMatrix { if (this.cache) return PathFinder.CostMatrix.deserialize(this.cache.matrix)}
+    get matrix(): CostMatrix { if (this.cache) { return PathFinder.CostMatrix.deserialize(this.cache.matrix); } }
     get startTime(): number { return this.memory.startTime; }
 
-    init(roomName: string, safeEntrance: boolean): boolean {
+    public refreshGuru(roomName: string, safeEntrance: boolean): boolean {
         this.raidRoomName = roomName;
         this.raidRoom = Game.rooms[roomName];
         this.cache = this.memory.cache;
@@ -50,7 +52,7 @@ export class RaidGuru extends Guru {
 
     private generateCache(roomName: string, safeEntrance: boolean): RaidCache {
         let room = this.observeRoom(roomName);
-        if (!room) return;
+        if (!room) { return; }
 
         let cache = {} as RaidCache;
 
@@ -68,8 +70,9 @@ export class RaidGuru extends Guru {
         cache.fallbackPos = this.findFallback(room, cache.bestExit);
         cache.matrix = matrix.serialize();
 
-        helper.showMatrix(matrix);
-        notifier.log(`ZOMBIE: init raid at ${roomName}, expectedDamage: ${cache.expectedDamage}, bestExit: ${cache.bestExit}`);
+        helper.showMatrix(matrix, roomName);
+        Notifier.log(`ZOMBIE: init raid at ${roomName}, expectedDamage: ${cache.expectedDamage}, bestExit: ${
+            cache.bestExit}`);
         return cache;
     }
 
@@ -78,7 +81,7 @@ export class RaidGuru extends Guru {
         if (walls.length > 0) {
             let highestHits = _(walls).sortBy("hits").last().hits;
             for (let wall of walls) {
-                matrix.set(wall.pos.x, wall.pos.y, Math.ceil(wall.hits * 10 / highestHits) * 10)
+                matrix.set(wall.pos.x, wall.pos.y, Math.ceil(wall.hits * 10 / highestHits) * 10);
             }
         }
 
@@ -90,10 +93,10 @@ export class RaidGuru extends Guru {
         let bestExit;
         let ret = PathFinder.search(this.spawnGroup.pos, {pos: spawns[0].pos, range: 1}, {
             roomCallback: (roomName: string): CostMatrix | boolean => {
-                if (roomName !== this.room.name && Traveler.checkOccupied(roomName)) { return false; }
+                if (roomName !== this.room.name && Traveler.checkAvoid(roomName)) { return false; }
                 let room = Game.rooms[roomName];
                 if (room) { return room.defaultMatrix; }
-            }
+            },
         });
         if (!ret.incomplete) {
             bestExit = _.find(ret.path, (p: RoomPosition) => p.roomName === this.room.name);
@@ -104,7 +107,7 @@ export class RaidGuru extends Guru {
             let exitData = Game.map.describeExits(this.room.name);
             for (let direction in exitData) {
                 let roomName = exitData[direction];
-                let allowedRooms = empire.traveler.findRoute(this.spawnGroup.pos.roomName, roomName);
+                let allowedRooms = Traveler.findRoute(this.spawnGroup.pos.roomName, roomName);
                 if (allowedRooms && Object.keys(allowedRooms).length <= 8) {
                     allowedExits[direction] = true;
                 }
@@ -124,14 +127,11 @@ export class RaidGuru extends Guru {
                 if (bestExit) { continue; }
                 if (allowedExits["1"] && y === 0) {
                     exitPositions.push(new RoomPosition(x, y, this.room.name));
-                }
-                else if (allowedExits["3"] && x === 49) {
+                } else if (allowedExits["3"] && x === 49) {
                     exitPositions.push(new RoomPosition(x, y, this.room.name));
-                }
-                else if (allowedExits["5"] && y === 49) {
+                } else if (allowedExits["5"] && y === 49) {
                     exitPositions.push(new RoomPosition(x, y, this.room.name));
-                }
-                else if (allowedExits["7"] && x === 0) {
+                } else if (allowedExits["7"] && x === 0) {
                     exitPositions.push(new RoomPosition(x, y, this.room.name));
                 }
             }
@@ -156,8 +156,7 @@ export class RaidGuru extends Guru {
                 expectedDamage += helper.towerDamageAtRange(range);
             }
             return expectedDamage / 2;
-        }
-        else {
+        } else {
             let mostExpectedDamage = 0;
             for (let attackedTower of towers) {
                 let expectedDamage = 0;
@@ -174,7 +173,7 @@ export class RaidGuru extends Guru {
     }
 
     private calcAverageWallHits(walls: Structure[]) {
-        if (walls.length === 0) return 0;
+        if (walls.length === 0) { return 0; }
         return _.sum(walls, "hits") / walls.length;
     }
 
@@ -184,22 +183,18 @@ export class RaidGuru extends Guru {
             if (fallback.x === 0) {
                 fallback.x = 48;
                 fallback.roomName = WorldMap.findRelativeRoomName(fallback.roomName, -1, 0);
-            }
-            else if (fallback.x === 49) {
+            } else if (fallback.x === 49) {
                 fallback.x = 1;
                 fallback.roomName = WorldMap.findRelativeRoomName(fallback.roomName, 1, 0);
-            }
-            else if (fallback.y === 0) {
+            } else if (fallback.y === 0) {
                 fallback.y = 48;
                 fallback.roomName = WorldMap.findRelativeRoomName(fallback.roomName, 0, -1);
-            }
-            else {
+            } else {
                 fallback.y = 1;
                 fallback.roomName = WorldMap.findRelativeRoomName(fallback.roomName, 0, 1);
             }
             return fallback;
-        }
-        else {
+        } else {
             // TODO: standard fallback
         }
     }

@@ -1,13 +1,14 @@
 import {Operation} from "./Operation";
-import {Empire} from "../Empire";
 import {DemolishMission} from "../missions/DemolishMission";
-import {empire} from "../../helpers/loopHelper";
+import {OperationPriority} from "../../config/constants";
+import {empire} from "../Empire";
 export class DemolishOperation extends Operation {
 
     /**
-     * Spawn a demolisher when there are flags that match his pattern ("Flag + n"), he will visit those flags and remove the
-     * structures underneath. This pattern happens to be the default flag pattern used by the game UI, be careful.
-     * To have it spawn a scavanger to harvest energy, place a flag with name "opName_store" over a container/storage/terminal
+     * Spawn a demolisher when there are flags that match his pattern ("Flag + n"), he will visit those flags and remove
+     * the structures underneath. This pattern happens to be the default flag pattern used by the game UI, be careful.
+     * To have it spawn a scavenger to harvest energy, place a flag w/ name "opName_store" over a
+     * container/storage/terminal
      * @param flag
      * @param name
      * @param type
@@ -16,17 +17,20 @@ export class DemolishOperation extends Operation {
 
     constructor(flag: Flag, name: string, type: string) {
         super(flag, name, type);
+        this.priority = OperationPriority.Low
     }
 
-    initOperation() {
+    public init() {
         this.spawnGroup = empire.getSpawnGroup(this.flag.room.name);
 
         this.addMission(new DemolishMission(this));
     }
 
-    finalizeOperation() {
+    public update() { }
+
+    public finalize() {
     }
 
-    invalidateOperationCache() {
+    public invalidateCache() {
     }
 }

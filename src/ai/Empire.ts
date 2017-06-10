@@ -1,108 +1,90 @@
 import {SpawnGroup} from "./SpawnGroup";
-import {notifier} from "../notifier";
 import {Profiler} from "../Profiler";
-import {Traveler, traveler} from "./Traveler";
+import {Traveler} from "./Traveler";
 import {WorldMap} from "./WorldMap";
 import {MarketTrader} from "./MarketTrader";
 import {BonzaiDiplomat} from "./BonzaiDiplomat";
 import {BonzaiNetwork} from "./BonzaiNetwork";
-import {TimeoutTracker} from "../TimeoutTracker";
+import {Scheduler} from "../Scheduler";
+import {Archiver} from "./Archiver";
+import {MemHelper} from "../helpers/MemHelper";
+import {Notifier} from "../notifier";
+import {Janitor} from "./Janitor";
+import {Diplomat} from "./Diplomat";
+import {TradeNetwork} from "./TradeNetwork";
 
 export class Empire {
 
-    spawnGroups: {[roomName: string]: SpawnGroup};
-    memory: {
-        errantConstructionRooms: {};
-    };
-
-    public traveler: Traveler;
-    public diplomat: BonzaiDiplomat;
+    public spawnGroups: {[roomName: string]: SpawnGroup};
+    public diplomat: Diplomat;
     public map: WorldMap;
-    public network: BonzaiNetwork;
+    public network: TradeNetwork;
     public market: MarketTrader;
+    public archiver: Archiver;
+    public janitor: Janitor;
+    private updateTick: number;
 
-    constructor() {
-        if (!Memory.empire) Memory.empire = {};
-        _.defaults(Memory.empire, {
-            errantConstructionRooms: {},
-        });
-        this.memory = Memory.empire;
+    public static get(): Empire {
+        global.root = empire;
+        return empire;
     }
 
     /**
-     * Occurs before operation phases
+     * Occurs in init
      */
 
-    init() {
-        this.traveler = traveler;
-        this.diplomat = new BonzaiDiplomat();
+    public init() {
+        this.initMemory();
+        this.diplomat = new Diplomat();
         this.map = new WorldMap(this.diplomat);
         this.spawnGroups = this.map.init();
-        this.network = new BonzaiNetwork(this.map, this.diplomat);
-        this.network.init();
+        this.network = new TradeNetwork(this.map);
         this.market = new MarketTrader(this.network);
+        this.archiver = new Archiver();
+        this.archiver.init();
+        this.janitor = new Janitor();
+        this.janitor.init();
+        SpawnGroup.init(this.spawnGroups);
+    }
+
+    /**
+     * Occurs during tick, before operation phases
+     */
+
+    public update() {
+        if (this.updateTick === Game.time) { return; }
+        this.updateTick = Game.time;
+
+        this.diplomat.update();
+        this.map.update();
+        this.network.update();
+        this.archiver.update();
+        this.janitor.update();
+        SpawnGroup.update(this.spawnGroups);
     }
 
     /**
      * Occurs after operation phases
      */
 
-    actions() {
+    public actions() {
         this.map.actions();
         this.network.actions();
         this.market.actions();
-        this.clearErrantConstruction();
+        this.archiver.finalize();
+        this.janitor.actions();
+        SpawnGroup.finalize(this.spawnGroups);
     }
 
-    getSpawnGroup(roomName: string) {
-        if (this.spawnGroups[roomName]) {
-            return this.spawnGroups[roomName];
-        }
-        else {
-            let room = Game.rooms[roomName];
-            if (room && room.find(FIND_MY_SPAWNS).length > 0 && room.controller.level > 0) {
-                this.spawnGroups[roomName] = new SpawnGroup(room);
-                return this.spawnGroups[roomName];
-            }
-        }
+    public underCPULimit() {
+        return Profiler.proportionUsed() < .8;
     }
 
-    underCPULimit() {
-        return Profiler.proportionUsed() < .9;
+    public getSpawnGroup(roomName: string) {
+        return this.spawnGroups[roomName];
     }
 
-    private clearErrantConstruction() {
-        if (Game.time % 1000 !== 0) { return; }
-
-        let removeErrantStatus = {};
-        let addErrantStatus = {};
-        for (let siteName in Game.constructionSites) {
-            let site = Game.constructionSites[siteName];
-            if (site.room) {
-                delete this.memory.errantConstructionRooms[site.pos.roomName];
-            }
-            else {
-                if (this.memory.errantConstructionRooms[site.pos.roomName]) {
-                    site.remove();
-                    removeErrantStatus[site.pos.roomName];
-                }
-                else {
-                    addErrantStatus[site.pos.roomName] = true;
-                }
-            }
-        }
-
-        for (let roomName in addErrantStatus) {
-            this.memory.errantConstructionRooms[roomName] = true;
-        }
-
-        for (let roomName in removeErrantStatus) {
-            notifier.log(`EMPIRE: removed construction sites in ${roomName}`);
-            delete this.memory.errantConstructionRooms[roomName];
-        }
-    }
-
-    spawnFromClosest(pos: RoomPosition, body: string[], name: string) {
+    public spawnFromClosest(pos: RoomPosition, body: string[], name: string) {
         let closest: SpawnGroup;
         let bestDistance = Number.MAX_VALUE;
         for (let roomName in this.spawnGroups) {
@@ -114,5 +96,32 @@ export class Empire {
         }
         return closest.spawn(body, name);
     }
+
+    public initMemory() {
+        _.defaultsDeep(Memory, {
+            stats: {},
+            temp: {},
+            playerConfig: {
+                terminalNetworkRange: 6,
+                muteSpawn: false,
+                enableStats: false,
+                creditReserveAmount: Number.MAX_VALUE,
+                powerMinimum: 9000,
+                signText: 'Remote mining',
+            },
+            profiler: {},
+            traders: {},
+            powerObservers: {},
+            notifier: [],
+            cpu: {
+                history: [],
+                average: Game.cpu.getUsed(),
+            },
+            hostileMemory: {},
+            empire: {},
+        });
+    }
 }
 
+export let empire: Empire = new Empire();
+global["empire"] = empire;

@@ -1,195 +1,308 @@
-import {Empire} from "../Empire";
 import {Mission} from "../missions/Mission";
 import {SpawnGroup} from "../SpawnGroup";
 import {OperationPriority} from "../../config/constants";
-import {Profiler} from "../../Profiler";
-import {empire} from "../../helpers/loopHelper";
 import {RoomHelper} from "../RoomHelper";
 import {helper} from "../../helpers/helper";
 import {TimeoutTracker} from "../../TimeoutTracker";
+import {empire} from "../Empire";
+import {Scheduler} from "../../Scheduler";
+import {Profiler} from "../../Profiler";
+import {Notifier} from "../../notifier";
+import {Tick} from "../../Tick";
+import {PowerMission} from "../missions/PowerMission";
 
-export abstract class Operation {
+export interface OperationState {
+    hasVision?: boolean;
+    sources?: Source[];
+    mineral?: Mineral;
+}
 
-    flag: Flag;
-    name: string;
-    type: string;
-    room: Room;
-    priority: OperationPriority;
-    hasVision: boolean;
-    sources: Source[];
-    mineral: Mineral;
-    spawnGroup: SpawnGroup;
-    remoteSpawn: {distance: number, spawnGroup: SpawnGroup};
-    missions: {[roleName: string]: Mission} = {};
-    waypoints: Flag[];
-    spawnData: {
+export interface OperationMemory {
+    spawnData?: {
         spawnRooms: { distance: number, roomName: string }[];
         nextSpawnCheck: number;
     };
-    memory: any;
+}
+
+export abstract class Operation {
+
+    public flagName: string;
+    public roomName: string;
+    public name: string;
+    public type: string;
+    public pos: RoomPosition;
+    public priority: OperationPriority;
+    public spawnGroup: SpawnGroup;
+    public remoteSpawn: {distance: number, spawnGroup: SpawnGroup};
+    public missions: {[missionName: string]: Mission} = {};
+    public memory: OperationMemory;
+    public flag: Flag;
+    public room: Room;
+    public waypoints: Flag[];
+    private sourceIds: string[];
+    private mineralId: string;
+
+    public state: OperationState;
+    private stateTick: number;
+    private bypass: boolean;
+
+    private static priorityOrder = [
+        OperationPriority.Emergency,
+        OperationPriority.OwnedRoom,
+        OperationPriority.VeryHigh,
+        OperationPriority.High,
+        OperationPriority.Medium,
+        OperationPriority.Low,
+        OperationPriority.VeryLow,
+        ];
 
     /**
      *
-     * @param flag - missions will operate relative to this flag, use the following naming convention: "operationType_operationName"
+     * @param flag - missions will operate relative to this flag, use the following naming convention:
+     * "operationType_operationName"
      * @param name - second part of flag.name, should be unique amont all other operation names (I use city names)
      * @param type - first part of flag.name, used to determine which operation class to instantiate
-     * @param empire - object used for empire-scoped behavior (terminal transmission, etc.)
      */
     constructor(flag: Flag, name: string, type: string) {
-        this.flag = flag;
+        this.flagName = flag.name;
+        this.roomName = flag.pos.roomName;
         this.name = name;
         this.type = type;
-        this.room = flag.room;
-        this.memory = flag.memory;
-        if (!this.memory.spawnData) { this.memory.spawnData = {}; }
-        this.spawnData = this.memory.spawnData;
-        // variables that require vision (null check where appropriate)
-        if (this.flag.room) {
-            this.hasVision = true;
-            this.sources = _.sortBy(flag.room.find<Source>(FIND_SOURCES), (s: Source) => s.pos.getRangeTo(flag));
-            this.mineral = _.head(flag.room.find<Mineral>(FIND_MINERALS));
-        }
+        this.pos = flag.pos;
     }
 
+    protected initState() {
+        if (this.stateTick === Game.time) { return; }
+        this.stateTick = Game.time;
+
+        this.flag = Game.flags[this.flagName];
+        if (!this.flag) { return; } // flag must have been pulled
+        this.room = Game.rooms[this.roomName];
+        this.bypass = false;
+        this.memory = this.flag.memory;
+        if (!this.memory.spawnData) { this.memory.spawnData = {} as any; }
+
+        // find state
+        this.state = {} as OperationState;
+
+        if (this.room) {
+            this.state.hasVision = true;
+            if (!this.sourceIds) {
+                this.sourceIds = _(this.room.find<Source>(FIND_SOURCES))
+                    .sortBy(x => x.id)
+                    .map(x => x.id)
+                    .value();
+            }
+            this.state.sources = _.map(this.sourceIds, x => Game.getObjectById<Source>(x));
+            if (!this.mineralId) {
+                this.mineralId = _(this.room.find<Mineral>(FIND_MINERALS))
+                    .map(x => x.id)
+                    .head();
+            }
+            this.state.mineral = Game.getObjectById<Mineral>(this.mineralId);
+        } else {
+            this.state.hasVision = false;
+        }
+    }
 
     /**
-     * Init Phase - initialize operation variables and instantiate missions
+     * Global Phase - Runs on init initState ticks - initialize operation variables and instantiate missions
      */
-    init() {
-        try {
-            TimeoutTracker.log("initOperation", this.name);
-            this.initOperation();
-        }
-        catch (e) {
-            console.log("error caught in initOperation phase, operation:", this.name);
-            console.log(e.stack);
-        }
 
-        for (let missionName in this.missions) {
-            try {
-                TimeoutTracker.log("initMission", this.name, missionName);
-                Profiler.start("in_m." + missionName.substr(0, 3));
-                this.missions[missionName].initMission();
-                Profiler.end("in_m." + missionName.substr(0, 3));
-            }
-            catch (e) {
-                console.log("error caught in initMission phase, operation:", this.name, "mission:", missionName);
-                console.log(e.stack);
+    public static init(priorityMap: OperationPriorityMap) {
+
+        for (let priority of this.priorityOrder) {
+            let operations = priorityMap[priority];
+            if (!operations) { continue; }
+            for (let opName in operations) {
+
+                // init operation
+                let operation = operations[opName];
+                operation.baseInit();
             }
         }
     }
-    abstract initOperation();
+
+    public baseInit() {
+        try {
+            this.initState();
+            this.init();
+
+            // init missions
+            for (let missionName in this.missions) {
+                let mission = this.missions[missionName];
+                mission.baseInit();
+            }
+        } catch (e) {
+            Notifier.reportException(e, "init", this.name);
+        }
+    }
+
+    protected abstract init();
+
+    /**
+     * Init Phase - Runs every tick - initialize operation variables and instantiate missions
+     */
+
+    public static update(priorityMap: OperationPriorityMap) {
+
+        for (let priority of this.priorityOrder) {
+            let operations = priorityMap[priority];
+            if (!operations) { continue; }
+
+            for (let opName in operations) {
+                let operation = operations[opName];
+                try {
+                    operation.initState();
+
+                    if (!operation.flag) {
+                        // flag must have been pulled
+                        operation.bypass = true;
+                        continue;
+                    }
+
+                    operation.update();
+
+                    Mission.update(operation.missions);
+
+                } catch (e) {
+                    Notifier.reportException(e, "update", opName);
+                    operation.bypass = true;
+                }
+            }
+        }
+    }
+
+    protected abstract update();
 
     /**
      * RoleCall Phase - Iterate through missions and call mission.roleCall()
      */
-    roleCall() {
-        // mission roleCall
-        for (let missionName in this.missions) {
-            try {
-                TimeoutTracker.log("roleCall", this.name, missionName);
-                Profiler.start("rc_m." + missionName.substr(0, 3));
-                this.missions[missionName].roleCall();
-                Profiler.end("rc_m." + missionName.substr(0, 3));
-            }
-            catch (e) {
-                console.log("error caught in roleCall phase, operation:", this.name, "mission:", missionName);
-                console.log(e.stack);
+
+    public static roleCall(priorityMap: OperationPriorityMap) {
+        for (let priority of this.priorityOrder) {
+            let operations = priorityMap[priority];
+            if (!operations) { continue; }
+
+            for (let opName in operations) {
+                let operation = operations[opName];
+                if (operation.bypass) { continue; }
+                Mission.roleCall(operation.missions);
             }
         }
     }
 
     /**
-     * Action Phase - Iterate through missions and call mission.missionActions()
+     * Action Phase - Iterate through missions and call mission.actions()
      */
-    actions() {
-        // mission actions
-        for (let missionName in this.missions) {
-            try {
-                TimeoutTracker.log("actions", this.name, missionName);
-                Profiler.start("ac_m." + missionName.substr(0, 3));
-                this.missions[missionName].missionActions();
-                Profiler.end("ac_m." + missionName.substr(0, 3));
-            }
-            catch (e) {
-                console.log("error caught in missionActions phase, operation:", this.name, "mission:", missionName, "in missionRoom ", this.flag.pos.roomName);
-                console.log(e.stack);
+
+    public static actions(priorityMap: OperationPriorityMap) {
+        for (let priority of this.priorityOrder) {
+            let operations = priorityMap[priority];
+            if (!operations) { continue; }
+
+            for (let opName in operations) {
+                let operation = operations[opName];
+                if (operation.bypass) { continue; }
+                // this avoids timeouts due to GC events and other spikes. Set this number lower to be more conservative
+                if (operation.priority > OperationPriority.High && Game.cpu.getUsed() > 450) {
+                    operation.bypass = true;
+                    Tick.cache.bypassCount++;
+                    continue;
+                }
+                Mission.actions(operation.missions);
             }
         }
     }
 
     /**
-     * Finalization Phase - Iterate through missions and call mission.finalizeMission(), also call operation.finalizeOperation()
+     * Finalization Phase - Cleanup and run tasks that need to be executed after all other tasks
      */
-    finalize() {
-        // mission actions
-        for (let missionName in this.missions) {
-            try {
-                TimeoutTracker.log("finalize", this.name, missionName);
-                Profiler.start("fi_m." + missionName.substr(0, 3));
-                this.missions[missionName].finalizeMission();
-                Profiler.end("fi_m." + missionName.substr(0, 3));
-            }
-            catch (e) {
-                console.log("error caught in finalizeMission phase, operation:", this.name, "mission:", missionName);
-                console.log(e.stack);
-            }
-        }
 
-        try {
-            TimeoutTracker.log("finalizeOperation", this.name);
-            this.finalizeOperation();
-            TimeoutTracker.log("post-operation");
-        }
-        catch (e) {
-            console.log("error caught in finalizeOperation phase, operation:", this.name);
-            console.log(e.stack);
-        }
-    }
-    abstract finalizeOperation();
+    public static finalize(priorityMap: OperationPriorityMap) {
+        for (let priority of this.priorityOrder) {
+            let operations = priorityMap[priority];
+            if (!operations) { continue; }
 
-    /**
-     * Invalidate Cache Phase - Occurs every-so-often (see constants.ts) to give you an efficient means of invalidating operation and
-     * mission cache
-     */
-    invalidateCache() {
-        // base rate of 1 proc out of 100 ticks
-        if (Math.random() < .01) {
-            for (let missionName in this.missions) {
+            for (let opName in operations) {
+                let operation = operations[opName];
+                if (operation.bypass) { continue; }
                 try {
-                    this.missions[missionName].invalidateMissionCache();
+                    operation.finalize();
+                    Mission.finalize(operation.missions);
+                } catch (e) {
+                    Notifier.reportException(e, "finalize", opName);
+                    operation.bypass = true;
                 }
-                catch (e) {
-                    console.log("error caught in invalidateMissionCache phase, operation:", this.name, "mission:", missionName);
-                    console.log(e.stack);
-                }
-            }
-
-            try {
-                this.invalidateOperationCache();
-            }
-            catch (e) {
-                console.log("error caught in invalidateOperationCache phase, operation:", this.name);
-                console.log(e.stack);
             }
         }
     }
-    abstract invalidateOperationCache();
+
+    protected abstract finalize();
+
+    /**
+     * Invalidate Cache Phase - Occurs every-so-often (see constants.ts) to give you an efficient means of invalidating
+     * operation and mission cache
+     */
+
+    public static invalidateCache(priorityMap: OperationPriorityMap) {
+        if (Math.random() > .01) { return; }
+
+        for (let priority of this.priorityOrder) {
+            let operations = priorityMap[priority];
+            if (!operations) { continue; }
+
+            for (let opName in operations) {
+                let operation = operations[opName];
+                if (operation.bypass) { continue; }
+                try {
+                    operation.invalidateCache();
+                    Mission.invalidateCache(operation.missions);
+                } catch (e) {
+                    Notifier.reportException(e, "invalidate", opName);
+                }
+            }
+        }
+    }
+    protected abstract invalidateCache();
 
     /**
      * Add mission to operation.missions hash
      * @param mission
      */
-    addMission(mission: Mission) {
+    public addMission(mission: Mission) {
         // it is important for every mission belonging to an operation to have
         // a unique name or they will be overwritten here
         this.missions[mission.name] = mission;
     }
 
-    initRemoteSpawn(roomDistanceLimit: number, levelRequirement: number, margin = 0) {
+    /**
+     * Used by other missions to add mission to the opreation - must still be called in init phase
+     * @param mission
+     */
+    public addMissionLate(mission: Mission) {
+        mission.baseInit();
+        this.missions[mission.name] = mission;
+    }
+
+    public removeMission(mission: Mission) {
+        delete this.missions[mission.name];
+    }
+
+    public initRemoteSpawn(roomDistanceLimit: number, levelRequirement: number, margin = 0, ignoreAvailability = false) {
+
+        let flag = Game.flags[`${this.name}_spawn`];
+        if (flag) {
+            let estimatedDistance = Game.map.getRoomLinearDistance(this.flag.pos.roomName, flag.pos.roomName) * 50;
+            let spawnGroup = empire.spawnGroups[flag.pos.roomName];
+            if (spawnGroup) {
+                this.remoteSpawn = { distance: estimatedDistance, spawnGroup: spawnGroup};
+                return;
+            }
+        }
 
         // invalidated periodically
-        if (!this.spawnData.nextSpawnCheck || Game.time >= this.spawnData.nextSpawnCheck) {
+        if (!Scheduler.delay(this.memory.spawnData, "nextSpawnCheck", 10000)) {
             let spawnGroups = _.filter(_.toArray(empire.spawnGroups),
                 spawnGroup => spawnGroup.room.controller.level >= levelRequirement
                 && spawnGroup.room.name !== this.flag.pos.roomName);
@@ -198,69 +311,71 @@ export abstract class Operation {
 
             if (bestGroups.length > 0) {
                 bestGroups = _.sortBy(bestGroups, value => value.distance);
-                this.spawnData.spawnRooms = _.map(bestGroups, value => {
-                    return {distance: value.distance, roomName: value.destination.room.name}
+                this.memory.spawnData.spawnRooms = _.map(bestGroups, value => {
+                    return {distance: value.distance, roomName: value.destination.room.name};
                 });
-                this.spawnData.nextSpawnCheck = Game.time + helper.randomInterval(10000); // Around 10 hours
             } else {
-                this.spawnData.nextSpawnCheck = Game.time + 100; // Around 6 min
+                this.memory.spawnData.nextSpawnCheck = Game.time + 100; // Around 6 min
             }
             console.log(`SPAWN: finding spawn rooms in ${this.name}, result: ${bestGroups.length} found`);
         }
 
-        if (this.spawnData.spawnRooms) {
+        if (this.memory.spawnData.spawnRooms) {
             let bestAvailability = 0;
             let bestSpawn: {distance: number, roomName: string };
-            for (let data of this.spawnData.spawnRooms) {
-                let spawnGroup = empire.getSpawnGroup(data.roomName);
+            for (let data of this.memory.spawnData.spawnRooms) {
+                let spawnGroup = empire.spawnGroups[data.roomName];
                 if (!spawnGroup) { continue; }
                 if (spawnGroup.averageAvailability >= 1) {
                     bestSpawn = data;
                     break;
                 }
-                if (spawnGroup.averageAvailability > bestAvailability) {
+                if (spawnGroup.averageAvailability >= bestAvailability) {
                     bestAvailability = spawnGroup.averageAvailability;
                     bestSpawn = data;
                 }
             }
             if (bestSpawn) {
-                this.remoteSpawn = {distance: bestSpawn.distance, spawnGroup: empire.getSpawnGroup(bestSpawn.roomName)};
+                this.remoteSpawn = {distance: bestSpawn.distance, spawnGroup: empire.spawnGroups[bestSpawn.roomName]};
             }
         }
     }
 
-    manualControllerBattery(id: string) {
-        let object = Game.getObjectById(id);
-        if (!object) { return "that is not a valid game object or not in vision"; }
-        this.flag.room.memory.controllerBatteryId = id;
-        this.flag.room.memory.upgraderPositions = undefined;
-        return "controller battery assigned to" + object;
+    public getRemoteSpawn() {
+        if (this.remoteSpawn && this.remoteSpawn.spawnGroup) {
+            return this.remoteSpawn.spawnGroup;
+        }
     }
 
-    protected findOperationWaypoints() {
+    public findOperationWaypoints() {
         this.waypoints = [];
         for (let i = 0; i < 100; i++) {
             let flag = Game.flags[this.name + "_waypoints_" + i];
             if (flag) {
                 this.waypoints.push(flag);
-            }
-            else {
+            } else {
                 break;
             }
         }
+        return this.waypoints;
     }
 
-    setMax(missionName: string, max: number) {
-        if (!this.memory[missionName]) return "SPAWN: no " + missionName + " mission in " + this.name;
+    public setMax(missionName: string, max: number) {
+        if (!this.memory[missionName]) { return "SPAWN: no " + missionName + " mission in " + this.name; }
         let oldValue = this.memory[missionName].max;
         this.memory[missionName].max = max;
         return "SPAWN: " + missionName + " max spawn value changed from " + oldValue + " to " + max;
     }
 
-    setBoost(missionName: string, activateBoost: boolean) {
-        if (!this.memory[missionName]) return "SPAWN: no " + missionName + " mission in " + this.name;
+    public setBoost(missionName: string, activateBoost: boolean) {
+        if (!this.memory[missionName]) { return "SPAWN: no " + missionName + " mission in " + this.name; }
         let oldValue = this.memory[missionName].activateBoost;
         this.memory[missionName].activateBoost = activateBoost;
         return "SPAWN: " + missionName + " boost value changed from " + oldValue + " to " + activateBoost;
     }
 }
+
+enum OperationPhase { InitGlobal, Init, RoleCall, Actions, Finalize }
+
+export type OperationPriorityMap = {[priority: number]: { [opName: string]: Operation } }
+export type OperationMap = {[opName: string]: Operation}

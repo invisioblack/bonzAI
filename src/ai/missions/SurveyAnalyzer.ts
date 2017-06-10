@@ -1,13 +1,12 @@
 import {SurveyMission} from "./SurveyMission";
 import {helper} from "../../helpers/helper";
-import {Empire} from "../Empire";
 import {SpawnGroup} from "../SpawnGroup";
-import {notifier} from "../../notifier";
+import {Notifier} from "../../notifier";
 import {Mission} from "./Mission";
-import {empire} from "../../helpers/loopHelper";
 import {WorldMap, ROOMTYPE_ALLEY, ROOMTYPE_SOURCEKEEPER} from "../WorldMap";
 import {Traveler} from "../Traveler";
 import {USERNAME} from "../../config/constants";
+import {empire} from "../Empire";
 
 interface SurveyData {
     danger: boolean;
@@ -15,7 +14,7 @@ interface SurveyData {
     sourceCount?: number;
     averageDistance?: number;
     owner?: string;
-    lastCheckedOwner?: number;
+    nextOwnerCheck?: number;
     hasWalls?: boolean;
 }
 
@@ -42,16 +41,17 @@ export class SurveyAnalyzer {
 
         // place flag in chosen missionRoom
         if (Game.time < this.memory.nextAnalysis) { return; }
+        if (this.spawnGroup.averageAvailability < 1) { }
+
         if (this.memory.chosenRoom) {
             let room = Game.rooms[this.memory.chosenRoom];
             if (room) {
                 this.placeFlag(room);
                 delete this.memory.chosenRoom;
                 if (Object.keys(this.memory.surveyRooms).length === 0) {
-                    notifier.log(`SURVEY: no more rooms to evaluate in ${this.room.name}`);
-                }
-                else {
-                    this.memory.nextAnalysis = Game.time + 1000;
+                    Notifier.log(`SURVEY: no more rooms to evaluate in ${this.room.name}`);
+                } else {
+                    this.memory.nextAnalysis = Game.time + helper.randomInterval(1000);
                 }
             }
             return this.memory.chosenRoom;
@@ -61,9 +61,9 @@ export class SurveyAnalyzer {
         let exploreRoomName;
         if (!this.memory.surveyRooms) { this.memory.surveyRooms = this.initSurveyData(); }
         exploreRoomName = this.completeSurveyData(this.memory.surveyRooms);
-        if (exploreRoomName) return exploreRoomName;
+        if (exploreRoomName) { return exploreRoomName; }
         exploreRoomName = this.updateOwnershipData();
-        if (exploreRoomName) return;
+        if (exploreRoomName) { return; }
 
         let chosenRoom;
         let readyList = this.checkReady();
@@ -72,9 +72,8 @@ export class SurveyAnalyzer {
         }
         if (chosenRoom) {
             this.memory.chosenRoom = chosenRoom;
-        }
-        else if (this.memory.nextAnalysis < Game.time) {
-            this.memory.nextAnalysis = Game.time + 1000;
+        } else if (this.memory.nextAnalysis < Game.time) {
+            this.memory.nextAnalysis = Game.time + helper.randomInterval(1000);
         }
 
     }
@@ -96,24 +95,22 @@ export class SurveyAnalyzer {
         for (let roomName of adjacentRoomNames) {
 
             let noSafePath = false;
-            let roomsInPath = empire.traveler.findRoute(this.room.name, roomName,
-                { allowHostile: true, restrictDistance: 1 });
+            let roomsInPath = Traveler.findRoute(this.room.name, roomName,
+                { allowHostile: true, restrictDistance: 1, useFindRoute: true });
             if (roomsInPath) {
                 for (let roomName in roomsInPath) {
-                    if (Traveler.checkOccupied(roomName)) {
+                    if (Traveler.checkAvoid(roomName)) {
                         noSafePath = true;
                     }
                 }
-            }
-            else {
+            } else {
                 noSafePath = true;
             }
 
             let type = WorldMap.roomTypeFromName(roomName);
             if (type === ROOMTYPE_SOURCEKEEPER || noSafePath) {
                 data[roomName] = { danger: true };
-            }
-            else {
+            } else {
                 data[roomName] = { danger: false };
             }
         }
@@ -121,8 +118,7 @@ export class SurveyAnalyzer {
         return data;
     }
 
-
-    findAdjacentRooms(startRoomName: string, distance = 1, filterOut: number[] = []): string[] {
+    private findAdjacentRooms(startRoomName: string, distance = 1, filterOut: number[] = []): string[] {
         let alreadyChecked: {[roomName: string]: boolean } = { [startRoomName]: true };
         let adjacentRooms: string[] = [];
         let testRooms: string[] = [startRoomName];
@@ -130,9 +126,9 @@ export class SurveyAnalyzer {
             let testRoom = testRooms.pop();
             alreadyChecked[testRoom] = true;
             for (let value of _.values<string>(Game.map.describeExits(testRoom))) {
-                if (alreadyChecked[value]) continue;
-                if (Game.map.getRoomLinearDistance(startRoomName, value) > distance) continue;
-                if (_.includes(filterOut, WorldMap.roomTypeFromName(value))) continue;
+                if (alreadyChecked[value]) { continue; }
+                if (Game.map.getRoomLinearDistance(startRoomName, value) > distance) { continue; }
+                if (_.includes(filterOut, WorldMap.roomTypeFromName(value))) { continue; }
                 adjacentRooms.push(value);
                 testRooms.push(value);
                 alreadyChecked[value] = true;
@@ -145,7 +141,7 @@ export class SurveyAnalyzer {
 
         for (let roomName in surveyRooms) {
             let data = surveyRooms[roomName];
-            if (data.sourceCount) continue;
+            if (data.sourceCount) { continue; }
             let room = Game.rooms[roomName];
             if (room) {
                 this.analyzeRoom(room, data);
@@ -153,9 +149,8 @@ export class SurveyAnalyzer {
             }
             if (!data.danger) {
                 return roomName;
-            }
-            else {
-                if (this.room.controller.level < 8) continue;
+            } else {
+                if (this.room.controller.level < 8) { continue; }
                 return roomName;
             }
         }
@@ -170,7 +165,7 @@ export class SurveyAnalyzer {
 
         // owner
         data.owner = this.checkOwnership(room);
-        data.lastCheckedOwner = Game.time;
+        data.nextOwnerCheck = Game.time + helper.randomInterval(10000);
         if (data.owner === USERNAME) {
             delete this.memory.surveyRooms[room.name];
             return;
@@ -190,10 +185,10 @@ export class SurveyAnalyzer {
                     if (Game.map.getRoomLinearDistance(this.room.name, roomName) > roomDistance) {
                         return false;
                     }
-                }
+                },
             });
             if (ret.incomplete) {
-                notifier.log(`SURVEY: Incomplete path from ${this.room.storage.pos} to ${source.pos}`);
+                Notifier.log(`SURVEY: Incomplete path from ${this.room.storage.pos} to ${source.pos}`);
             }
 
             let distance = ret.path.length;
@@ -201,8 +196,8 @@ export class SurveyAnalyzer {
             let cartsNeeded = Mission.analyzeTransport(distance, Mission.loadFromSource(source), 12900).cartsNeeded;
 
             // disqualify due to source distance
-            if (cartsNeeded > data.sourceCount){
-                notifier.log(`SURVEY: disqualified ${room.name} due to distance to source: ${cartsNeeded}`);
+            if (cartsNeeded > data.sourceCount) {
+                Notifier.log(`SURVEY: disqualified ${room.name} due to distance to source: ${cartsNeeded}`);
                 delete this.memory.surveyRooms[room.name];
                 return;
             }
@@ -224,12 +219,10 @@ export class SurveyAnalyzer {
         if (room.controller) {
             if (room.controller.reservation) {
                 return room.controller.reservation.username;
-            }
-            else if (room.controller.owner) {
+            } else if (room.controller.owner) {
                 return room.controller.owner.username;
             }
-        }
-        else {
+        } else {
             for (let source of room.find<Source>(FIND_SOURCES)) {
                 let nearbyCreeps = _.filter(source.pos.findInRange<Creep>(FIND_CREEPS, 1),
                     (c: Creep) => !c.owner || c.owner.username !== "Source Keeper");
@@ -244,18 +237,16 @@ export class SurveyAnalyzer {
         for (let roomName in this.memory.surveyRooms) {
             let data = this.memory.surveyRooms[roomName];
             // owner
-            if (Game.time > data.lastCheckedOwner + 10000) {
+            if (Game.time > data.nextOwnerCheck) {
                 let room = Game.rooms[roomName];
                 if (room) {
                     data.owner = this.checkOwnership(room);
                     if (data.owner === USERNAME) {
                         delete this.memory.surveyRooms[room.name];
+                    } else {
+                        data.nextOwnerCheck = Game.time + helper.randomInterval(10000);
                     }
-                    else {
-                        data.lastCheckedOwner = Game.time;
-                    }
-                }
-                else {
+                } else {
                     return roomName;
                 }
             }
@@ -265,12 +256,16 @@ export class SurveyAnalyzer {
     private checkReady(): {[roomName: string]: SurveyData} {
 
         if (!empire.underCPULimit()) {
-            notifier.log(`SURVEY: avoiding placement, cpu is over limit`);
-            this.memory.nextAnalysis = Game.time + 10000;
+            console.log(`SURVEY: avoiding placement, cpu is over limit`);
+            this.memory.nextAnalysis = Game.time + helper.randomInterval(10000);
             return;
         }
 
-
+        if (this.spawnGroup.refillEfficiency < .5) {
+            console.log(`SURVEY: poor spawn refill efficiency`);
+            this.memory.nextAnalysis = Game.time + helper.randomInterval(1000);
+            return;
+        }
 
         let readyList = {};
 
@@ -321,7 +316,7 @@ export class SurveyAnalyzer {
         }
         let flagName = `${opType}_${opName}`;
         helper.pathablePosition(room.name).createFlag(flagName, COLOR_GREY);
-        notifier.log(`SURVEY: created new operation in ${room.name}: ${flagName}`);
+        Notifier.log(`SURVEY: created new operation in ${room.name}: ${flagName}`);
         delete this.memory.surveyRooms[room.name];
     }
 }

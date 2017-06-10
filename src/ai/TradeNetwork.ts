@@ -1,15 +1,15 @@
 import {WorldMap} from "./WorldMap";
 export class TradeNetwork {
 
-    public storages: StructureStorage[] = [];
-    public terminals: StructureTerminal[] = [];
+    public storages: StructureStorage[];
+    public terminals: StructureTerminal[];
 
-    private shortages: {[resourceType: string]: StructureTerminal[] } = {};
-    private surpluses: {[resourceType: string]: StructureTerminal[] } = {};
+    private shortages: {[resourceType: string]: StructureTerminal[] };
+    private surpluses: {[resourceType: string]: StructureTerminal[] };
     private _inventory: {[key: string]: number};
     private map: WorldMap;
 
-    private alreadyTraded: {[roomName: string]: boolean } = {};
+    private alreadyTraded: {[roomName: string]: boolean };
 
     private memory: {
         tradeRoomIndex: number;
@@ -17,12 +17,17 @@ export class TradeNetwork {
 
     constructor(map: WorldMap) {
         this.map = map;
-
         if (!Memory.empire) { Memory.empire = {}; }
-        this.memory = Memory.empire;
     }
 
-    init() {
+    public update() {
+        this.memory = Memory.empire;
+        this.terminals = [];
+        this.storages = [];
+        this.shortages = {};
+        this.surpluses = {};
+        this.alreadyTraded = {};
+
         this.registerMyRooms();
         this.registerPartnerRooms();
     }
@@ -31,6 +36,7 @@ export class TradeNetwork {
         this.observeTradeRoom();
         this.tradeMonkey();
         this.reportTransactions();
+        this.sendResourceOrder();
     }
 
     // should only be accessed after Init()
@@ -41,7 +47,7 @@ export class TradeNetwork {
             for (let terminal of this.terminals) {
 
                 for (let mineralType in terminal.store) {
-                    if (!terminal.store.hasOwnProperty(mineralType)) continue;
+                    if (!terminal.store.hasOwnProperty(mineralType)) { continue; }
                     if (inventory[mineralType] === undefined) {
                         inventory[mineralType] = 0;
                     }
@@ -80,7 +86,7 @@ export class TradeNetwork {
                 continue;
             }
 
-            let roomMemory = this.map.tradeMap[roomName];
+            let roomMemory = Memory.rooms[roomName];
             if (Game.time < roomMemory.nextTrade) {
                 count++;
                 continue;
@@ -112,18 +118,65 @@ export class TradeNetwork {
 
     /**
      * Used to determine whether there is an abundance of a given resource type among all terminals.
-     * Should only be used after init() phase
+     * Should only be used after baseRefresh() phase
      * @param resourceType
-     * @param amountPerRoom - specify how much per missionRoom you consider an abundance, default value is SURPLUS_AMOUNT
+     * @param amountPerRoom - specify how much per missionRoom you consider an abundance, default is SURPLUS_AMOUNT
      */
     public hasAbundance(resourceType: string, amountPerRoom = RESERVE_AMOUNT * 2) {
         let abundanceAmount = this.terminals.length * amountPerRoom;
         return this.inventory[resourceType] && this.inventory[resourceType] > abundanceAmount;
     }
 
+    public sendBoost(boostType: string, roomName: string) {
+        let underReserve = [];
+        for (let terminal of this.terminals) {
+            let amountStored = terminal.store[boostType];
+            if (!amountStored || amountStored < 100) { continue; }
+            if (amountStored < RESERVE_AMOUNT + 100) {
+                underReserve.push(terminal);
+                continue;
+            }
+            let sendAmount = amountStored - RESERVE_AMOUNT;
+            let outcome = terminal.send(boostType, sendAmount, roomName);
+            console.log(`NETWORK: sent ${sendAmount} of ${boostType} from ${terminal.room.name} to ${
+                roomName} status: plenty -- outcome: ${outcome}`);
+        }
+
+        let mostToSpare = _(underReserve)
+            .filter(x => x.store[boostType] >= 100)
+            .max(x => x.store[boostType]);
+        if (!mostToSpare || _.isNumber(mostToSpare)) {
+            console.log(`NETWORK: no ${boostType} available to send to ${roomName}`);
+        }
+
+        let status = "getting low";
+        let amountStored = mostToSpare.store[boostType];
+        let sendAmount = amountStored - 2000;
+        if (sendAmount < 0) {
+            sendAmount = amountStored;
+            status = "last remaining";
+        }
+        let outcome = mostToSpare.send(boostType, sendAmount, roomName);
+        console.log(`NETWORK: sent ${sendAmount} of ${boostType} from ${mostToSpare.room.name} to ${
+            roomName} status: ${status} -- outcome: ${outcome}`);
+    }
+
+    public registerRoom(room: Room) {
+
+        if (!room.storage || !room.terminal) { return; }
+
+        this.terminals.push(room.terminal);
+        this.storages.push(room.storage);
+
+        if (TradeNetwork.canTrade(room)) {
+            this.analyzeResources(room);
+        }
+    }
+
     private registerMyRooms() {
         for (let roomName in this.map.controlledRooms) {
             let room = this.map.controlledRooms[roomName];
+            if (room.hostiles.length > 0) { continue; }
             if (room.terminal && room.terminal.my && room.controller.level >= 6) {
                 this.terminals.push(room.terminal);
             }
@@ -141,8 +194,7 @@ export class TradeNetwork {
         for (let room of this.map.tradeRooms) {
             if (TradeNetwork.canTrade(room)) {
                 this.analyzeResources(room);
-            }
-            else {
+            } else {
                 delete room.memory.nextTrade;
             }
         }
@@ -160,17 +212,14 @@ export class TradeNetwork {
             if (resourceType === RESOURCE_ENERGY) {
                 if (room.terminal.store.energy < 50000 && room.storage.store.energy < NEED_ENERGY_THRESHOLD) {
                     this.registerShortage(resourceType, room.terminal);
-                }
-                else if (room.storage.store.energy > SUPPLY_ENERGY_THRESHOLD) {
+                } else if (room.storage.store.energy > SUPPLY_ENERGY_THRESHOLD) {
                     this.registerSurplus(resourceType, room.terminal);
                 }
-            }
-            else {
+            } else {
                 let amount = room.terminal.store[resourceType] || 0;
                 if (amount < RESERVE_AMOUNT && !terminalFull) {
                     this.registerShortage(resourceType, room.terminal);
-                }
-                else if (amount >= SURPLUS_AMOUNT) {
+                } else if (amount >= RESERVE_AMOUNT + 1000) {
                     this.registerSurplus(resourceType, room.terminal);
                 }
             }
@@ -178,13 +227,13 @@ export class TradeNetwork {
     }
 
     private registerShortage(resourceType: string, terminal: StructureTerminal) {
-        if (!this.shortages[resourceType]) { this.shortages[resourceType] = []}
+        if (!this.shortages[resourceType]) { this.shortages[resourceType] = []; }
         this.shortages[resourceType].push(terminal);
     }
 
     private registerSurplus(resourceType: string, terminal: StructureTerminal) {
         if (!terminal.my) { return; } // we could erase this if we were all running the same code
-        if (!this.surpluses[resourceType]) { this.surpluses[resourceType] = []}
+        if (!this.surpluses[resourceType]) { this.surpluses[resourceType] = []; }
         this.surpluses[resourceType].push(terminal);
     }
 
@@ -196,12 +245,12 @@ export class TradeNetwork {
             let surplusTerminals = this.surpluses[resourceType];
             if (!surplusTerminals) { continue; }
             for (let shortage of shortageTerminals) {
-                let bestSurplus;
+                let bestSurplus: StructureTerminal;
                 let bestDistance = Number.MAX_VALUE;
                 for (let surplus of surplusTerminals) {
                     let distance = Game.map.getRoomLinearDistance(shortage.room.name, surplus.room.name);
                     if (distance > bestDistance) { continue; }
-                    if (distance > this.acceptableDistance(resourceType, surplus)) { continue; }
+                    if (!shortage.my && distance > this.acceptableDistance(resourceType, surplus)) { continue; }
                     bestDistance = distance;
                     bestSurplus = surplus;
                 }
@@ -211,7 +260,7 @@ export class TradeNetwork {
                         requiredEnergy = 30000;
                     }
                     if (bestSurplus.store.energy >= requiredEnergy) {
-                        let amount = this.sendAmount(resourceType, shortage);
+                        let amount = this.sendAmount(resourceType, shortage, bestSurplus);
                         this.sendResource(bestSurplus, resourceType, amount, shortage);
                     }
                     this.alreadyTraded[bestSurplus.room.name] = true;
@@ -220,15 +269,18 @@ export class TradeNetwork {
         }
     }
 
-    private sendAmount(resourceType: string, shortage: StructureTerminal): number {
+    private sendAmount(resourceType: string, shortage: StructureTerminal, surplus: StructureTerminal): number {
         if (resourceType === RESOURCE_ENERGY) { return TRADE_ENERGY_AMOUNT; }
         let amountStored = shortage.store[resourceType] || 0;
-        return RESERVE_AMOUNT - amountStored;
+        let amountNeeded = RESERVE_AMOUNT - amountStored;
+        let amountAvailable = surplus.store[resourceType] - RESERVE_AMOUNT;
+        return Math.min(amountNeeded, amountAvailable);
     }
 
     private acceptableDistance(resourceType: string, surplus: StructureTerminal): number {
-        if (IGNORE_TRADE_DISTANCE[resourceType]) { return Number.MAX_VALUE; }
-        else if (resourceType === RESOURCE_ENERGY) {
+        if (IGNORE_TRADE_DISTANCE[resourceType]) {
+            return Number.MAX_VALUE;
+        } else if (resourceType === RESOURCE_ENERGY) {
             if (_.sum(surplus.room.storage.store) >= 950000) {
                 return Number.MAX_VALUE;
             } else {
@@ -243,14 +295,15 @@ export class TradeNetwork {
         }
     }
 
-    private sendResource(localTerminal: StructureTerminal, resourceType: string, amount: number, otherTerminal: StructureTerminal) {
+    private sendResource(localTerminal: StructureTerminal, resourceType: string, amount: number,
+                         otherTerminal: StructureTerminal) {
 
         if (amount < 100) {
             amount = 100;
         }
 
         let outcome = localTerminal.send(resourceType, amount, otherTerminal.room.name);
-        if (outcome !== OK) {
+        if (outcome !== OK && outcome !== ERR_TIRED) {
             console.log(`NETWORK: error sending resource in ${localTerminal.room.name}, outcome: ${outcome}`);
             console.log(`arguments used: ${resourceType}, ${amount}, ${otherTerminal.room.name}`);
         }
@@ -261,12 +314,13 @@ export class TradeNetwork {
             && (!room.controller.sign || room.controller.sign.text !== "noTrade");
     }
 
-    reportTransactions() {
+    public reportTransactions() {
 
-        if (Game.time % 10 !== 0) return;
+        const delay = 10;
+        if (Game.time % delay !== 0) { return; }
 
         let kFormatter = (num: number) => {
-            return num > 999 ? (num/1000).toFixed(1) + 'k' : num
+            return num > 999 ? (num / 1000).toFixed(1) + "k" : num;
         };
 
         let consoleReport = (item: Transaction) => {
@@ -281,8 +335,8 @@ export class TradeNetwork {
         };
 
         for (let item of Game.market.incomingTransactions) {
-            if (!item.sender) continue;
-            if (item.time >= Game.time - 10) {
+            if (!item.sender) { continue; }
+            if (item.time >= Game.time - delay) {
                 let username = item.sender.username;
                 if (!username) { username = "npc"; }
                 if (!Memory.traders[username]) { Memory.traders[username] = {}; }
@@ -292,15 +346,14 @@ export class TradeNetwork {
                 Memory.traders[username][item.resourceType] += item.amount;
                 consoleReport(item);
                 this.processTransaction(item);
-            }
-            else {
+            } else {
                 break;
             }
         }
 
         for (let item of Game.market.outgoingTransactions) {
-            if (!item.recipient) continue;
-            if (item.time >= Game.time - 10) {
+            if (!item.recipient) { continue; }
+            if (item.time >= Game.time - delay) {
                 let username = item.recipient.username;
                 if (!username) { username = "npc"; }
                 if (!Memory.traders[username]) { Memory.traders[username] = {}; }
@@ -308,16 +361,60 @@ export class TradeNetwork {
                     Memory.traders[username][item.resourceType] = 0;
                 }
                 Memory.traders[item.recipient.username][item.resourceType] -= item.amount;
-                if (item.recipient.username === this.terminals[0].owner.username) { continue; }
+                if (!this.terminals[0] || item.recipient.username === this.terminals[0].owner.username) { continue; }
                 consoleReport(item);
-            }
-            else {
+            } else {
                 break;
             }
         }
     }
 
     protected processTransaction(item: Transaction) { } // overridden in BonzaiNetwork
+
+    protected sendResourceOrder() {
+        if (!Memory.resourceOrder) {
+            Memory.resourceOrder = {};
+        }
+        for (let timeStamp in Memory.resourceOrder) {
+            let order = Memory.resourceOrder[timeStamp];
+            if (!order.efficiency) { order.efficiency = 1; }
+            if (!order || order.roomName === undefined || order.amount === undefined) {
+                console.log("problem with order:", JSON.stringify(order));
+                return;
+            }
+            if (!order.amountSent) {
+                order.amountSent = 0;
+            }
+
+            let sortedTerminals = _.sortBy(this.terminals, (t: StructureTerminal) =>
+                Game.map.getRoomLinearDistance(order.roomName, t.room.name)) as StructureTerminal[];
+
+            let count = 0;
+            for (let terminal of sortedTerminals) {
+                if (terminal.room.name === order.roomName) { continue; }
+                if (terminal.store[order.resourceType] >= RESERVE_AMOUNT + 1000) {
+                    let amount = Math.min(1000, order.amount - order.amountSent);
+                    if (amount <= 0) {
+                        break;
+                    }
+                    let msg = order.resourceType + " delivery: " + (order.amountSent + amount) + "/" + order.amount;
+                    let outcome = terminal.send(order.resourceType, amount, order.roomName, msg);
+                    if (outcome === OK) {
+                        order.amountSent += amount;
+                        console.log(msg);
+                    }
+
+                    count++;
+                    if (count === order.efficiency) { break; }
+                }
+            }
+
+            if (order.amountSent === order.amount) {
+                console.log("finished sending mineral order: " + order.resourceType);
+                Memory.resourceOrder[timeStamp] = undefined;
+            }
+        }
+    }
 }
 
 // these are the constants that govern your energy balance
@@ -335,7 +432,9 @@ export const TRADE_DISTANCE = 6;
 export const IGNORE_TRADE_DISTANCE = {
     ["XUH2O"]: true,
     ["XLHO2"]: true,
+    ["XGH2O"]: true,
     [RESOURCE_POWER]: true,
+    [RESOURCE_ENERGY]: true,
 };
 export const MINERALS_RAW = ["H", "O", "Z", "U", "K", "L", "X"];
 export const PRODUCT_LIST = ["XUH2O", "XLHO2", "XLH2O", "XKHO2", "XGHO2", "XZHO2", "XZH2O", "G", "XGH2O"];

@@ -1,43 +1,46 @@
 
 import {Operation} from "../operations/Operation";
-import {Mission} from "../missions/Mission";
+import {Mission, MissionMemory, MissionState} from "../missions/Mission";
 import {helper} from "../../helpers/helper";
-import {Agent} from "./Agent";
+import {Agent} from "../agents/Agent";
 import {InvaderGuru} from "./InvaderGuru";
+import {TravelToOptions} from "../Traveler";
 export class EnhancedBodyguardMission extends Mission {
 
-    squadAttackers: Agent[];
-    squadHealers: Agent[];
+    private squadAttackers: Agent[];
+    private squadHealers: Agent[];
 
-    hostiles: Creep[];
-    hurtCreeps: Creep[];
+    private hostiles: Creep[];
     private invaderGuru: InvaderGuru;
+
+    public memory: EnhancedBodyguardMemory;
 
     constructor(operation: Operation, invaderGuru: InvaderGuru,  allowSpawn = true) {
         super(operation, "defense", allowSpawn);
         this.invaderGuru = invaderGuru;
     }
 
-    initMission() {
-        if (!this.hasVision) return; // early
-        this.hostiles = _.filter(this.room.hostiles, (hostile: Creep) => hostile.owner.username !== "Source Keeper");
-
-        if (!this.spawnGroup.room.terminal) return;
+    public init() {
+        if (!this.spawnGroup.room.terminal) { return; }
         if (this.memory.allowUnboosted === undefined) {
             let store = this.spawnGroup.room.terminal.store;
             this.memory.allowUnboosted = store[RESOURCE_CATALYZED_UTRIUM_ACID] >= 1000
                 && store[RESOURCE_CATALYZED_LEMERGIUM_ALKALIDE] >= 1000;
         }
+    }
+
+    public update() {
+        if (!this.state.hasVision) { return; } // early
+        this.hostiles = _.filter(this.room.hostiles, (hostile: Creep) => hostile.owner.username !== "Source Keeper");
 
         for (let id in this.memory.ticksToLive) {
             let creep = Game.getObjectById(id);
-            if (creep) continue;
+            if (creep) { continue; }
             let ticksToLive = this.memory.ticksToLive[id];
             if (ticksToLive > 10 && this.memory.allowUnboosted) {
                 console.log("DEFENSE:", this.operation.name, "lost a leeroy, increasing potency");
                 this.memory.potencyUp = true;
-            }
-            else if (this.memory.potencyUp) {
+            } else if (this.memory.potencyUp) {
                 console.log("DEFENSE:", this.operation.name, "leeroy died of old age, decreasing potency:");
                 this.memory.potencyUp = false;
             }
@@ -45,23 +48,23 @@ export class EnhancedBodyguardMission extends Mission {
         }
     }
 
-    squadAttackerBody = () => {
+    private squadAttackerBody = () => {
         if (this.memory.potencyUp) {
             return this.configBody({
                 [ATTACK]: 10,
                 [RANGED_ATTACK]: 2,
-                [MOVE]: 12
+                [MOVE]: 12,
             });
         } else {
             return this.configBody({
                 [ATTACK]: 20,
                 [RANGED_ATTACK]: 5,
-                [MOVE]: 25
+                [MOVE]: 25,
             });
         }
     };
 
-    squadHealerBody = () => {
+    private squadHealerBody = () => {
         if (this.memory.potencyUp) {
             return this.configBody({
                 [TOUGH]: 8,
@@ -77,9 +80,13 @@ export class EnhancedBodyguardMission extends Mission {
         }
     };
 
-    getMaxSquads = () => this.invaderGuru.invaderProbable || this.hasVision && this.hostiles.length > 0 ? 1 : 0;
+    private getMaxSquads = () => {
+        if (this.invaderGuru.invaderProbable) { return 1; }
+        if (this.state.hasVision && this.hostiles.length > 0) { return 1; }
+        return 0;
+    };
 
-    roleCall() {
+    public roleCall() {
         let healerMemory;
         let attackerMemory;
         if (this.memory.potencyUp) {
@@ -93,10 +100,7 @@ export class EnhancedBodyguardMission extends Mission {
             {prespawn: 50, memory: healerMemory, skipMoveToRoom: true});
     }
 
-    missionActions() {
-
-        this.findPartnerships(this.squadAttackers, "attacker");
-        this.findPartnerships(this.squadHealers, "healer");
+    public actions() {
 
         for (let attacker of this.squadAttackers) {
             this.squadActions(attacker);
@@ -107,8 +111,8 @@ export class EnhancedBodyguardMission extends Mission {
         }
     }
 
-    finalizeMission() {
-        if (!this.memory.ticksToLive) this.memory.ticksToLive = {};
+    public finalize() {
+        if (!this.memory.ticksToLive) { this.memory.ticksToLive = {}; }
         for (let creep of this.squadAttackers) {
             this.memory.ticksToLive[creep.id] = creep.ticksToLive;
         }
@@ -117,43 +121,45 @@ export class EnhancedBodyguardMission extends Mission {
         }
     }
 
-    invalidateMissionCache() {
+    public invalidateCache() {
         this.memory.allowUnboosted = undefined;
     }
 
     private squadActions(attacker: Agent) {
 
         // find healer, flee if there isn't one
-        let healer = this.getPartner(attacker, this.squadHealers);
-        if (!healer) { attacker.memory.partner = undefined; }
-
+        let healer = this.findPartner(attacker, this.squadHealers, 1500);
         if (!healer || healer.spawning) {
             if (attacker.room.name !== this.spawnGroup.pos.roomName || attacker.pos.isNearExit(0)) {
                 attacker.travelTo(this.spawnGroup);
-            }
-            else {
-                attacker.idleOffRoad(this.spawnGroup)
+            } else {
+                attacker.idleOffRoad(this.spawnGroup.room.controller);
             }
             return;
         }
 
+        if (!this.room) {
+            // Agent.squadTravel(attacker, healer, this.flag);
+            // return;
+        }
+
         // missionRoom is safe
         if (!this.hostiles || this.hostiles.length === 0) {
-            healer.memory.mindControl = false;
             attacker.idleNear(this.flag);
             return;
         }
 
         let attacking = false;
         let rangeAttacking = false;
-        healer.memory.mindControl = true;
-        let target = attacker.pos.findClosestByRange(_.filter(this.hostiles, (c: Creep) => c.partCount(HEAL) > 0)) as Creep;
+        let msg = "";
+        let target = attacker.pos.findClosestByRange(_.filter(this.hostiles,
+            (c: Creep) => c.partCount(HEAL) > 0)) as Creep;
         if (!target) {
             target = attacker.pos.findClosestByRange(this.hostiles) as Creep;
         }
         if (!target && attacker.memory.targetId) {
             target = Game.getObjectById(attacker.memory.targetId) as Creep;
-            if (!target) attacker.memory.targetId = undefined;
+            if (!target) { attacker.memory.targetId = undefined; }
         }
         if (healer.hits < healer.hitsMax * .5 || attacker.hits < attacker.hitsMax * .5) {
             this.memory.healUp = true;
@@ -163,58 +169,62 @@ export class EnhancedBodyguardMission extends Mission {
             if (healer.hits > healer.hitsMax * .8 && attacker.hits > attacker.hitsMax * .8) {
                 this.memory.healUp = false;
             }
-        }
-        else if (target) {
+        } else if (target) {
+            msg += "t";
+
             attacker.memory.targetId = target.id;
+
+            let options: TravelToOptions = {};
+            if (attacker.room === target.room) {
+                options.maxRooms = 1;
+            }
 
             let range = attacker.pos.getRangeTo(target);
             if (range === 1) {
                 attacker.rangedMassAttack();
                 attacking = attacker.attack(target) === OK;
-            }
-            else if (range <= 3) {
+            } else if (range <= 3) {
                 rangeAttacking = attacker.rangedAttack(target) === OK;
             }
 
             if (attacker.room.name !== target.room.name) {
-                Agent.squadTravel(attacker, healer, target);
-            }
-            else if (range > 3 || (range > 1 && !(Game.time - attacker.memory.fleeTick === 1))) {
-                Agent.squadTravel(attacker, healer, target);
-            }
-            else if (range > 1) {
-                let fleePath = PathFinder.search(target.pos, {pos: attacker.pos, range: 5 }, {flee: true, maxRooms: 1});
-                // will only flee-bust  on consecutive ticks
-                if (fleePath.incomplete || !fleePath.path[1] || !fleePath.path[1].isNearExit(0)) {
-                    Agent.squadTravel(attacker, healer, target, {ignoreRoads: true});
+                msg += "-nr";
+                Agent.squadTravel(attacker, healer, target, options);
+            } else if (range > 3) {
+                msg += "-r3";
+                Agent.squadTravel(attacker, healer, target, options);
+            } else if (range > 1) {
+                let direction = attacker.fleeBuster(target);
+                if (direction && attacker.fatigue === 0 && healer.fatigue === 0 && attacker.pos.isNearTo(healer)) {
+                    msg += "-fb";
+                    attacker.move(direction);
+                    healer.travelTo(attacker);
+                } else {
+                    msg += "-nb";
+                    Agent.squadTravel(attacker, healer, target, options);
                 }
-                else {
-                    attacker.memory.fleeTick = Game.time;
-                    Agent.squadTravel(attacker, healer, {pos: fleePath.path[1]}, {ignoreRoads: true});
-                }
-            }
-            else {
+            } else {
                 if (!target.pos.isNearExit(0)) {
                     // directly adjacent, move on to same position
-                    Agent.squadTravel(attacker, healer, target, {range: 0});
-                }
-                else {
+                    Agent.squadTravel(attacker, healer, target);
+                } else {
                     let direction = attacker.pos.getDirectionTo(target);
-                    if (direction % 2 === 1) return; // not a diagonal position, already in best position;
+                    if (direction % 2 === 1) { return; } // not a diagonal position, already in best position;
                     let clockwisePosition = attacker.pos.getPositionAtDirection(helper.clampDirection(direction + 1));
                     if (!clockwisePosition.isNearExit(0)) {
                         Agent.squadTravel(attacker, healer, {pos: clockwisePosition});
-                    }
-                    else {
-                        let counterClockwisePosition = attacker.pos.getPositionAtDirection(helper.clampDirection(direction - 1));
+                    } else {
+                        let counterClockwisePosition = attacker.pos.getPositionAtDirection(
+                            helper.clampDirection(direction - 1));
                         Agent.squadTravel(attacker, healer, {pos: counterClockwisePosition});
                     }
                 }
             }
-        }
-        else {
+        } else {
             Agent.squadTravel(attacker, healer, this.flag);
         }
+
+        healer.say(msg);
 
         let closest = attacker.pos.findClosestByRange(this.hostiles);
         if (closest) {
@@ -233,30 +243,25 @@ export class EnhancedBodyguardMission extends Mission {
     }
 
     private healerActions(healer: Agent) {
+
         if (!this.hostiles || this.hostiles.length === 0) {
             if (healer.hits < healer.hitsMax) {
                 healer.heal(healer);
-            }
-            else {
+            } else {
                 this.medicActions(healer);
             }
             return;
         }
 
         // hostiles in missionRoom
-        let attacker = Game.creeps[healer.memory.partner];
-        if (!attacker) {
-            healer.memory.partner = undefined;
-        }
-
+        let attacker = this.findPartner(healer, this.squadAttackers, 1500);
         if (!attacker || attacker.spawning) {
             if (healer.hits < healer.hitsMax) {
                 healer.heal(healer);
             }
             if (attacker && attacker.room.name === healer.room.name) {
                 healer.idleOffRoad(this.spawnGroup);
-            }
-            else {
+            } else {
                 healer.travelTo(this.spawnGroup);
             }
             return;
@@ -268,17 +273,24 @@ export class EnhancedBodyguardMission extends Mission {
             if (attacker.hitsMax - attacker.hits > healer.hitsMax - healer.hits) {
                 if (range > 1) {
                     healer.rangedHeal(attacker);
-                }
-                else {
+                } else {
                     healer.heal(attacker);
                 }
-            }
-            else {
+            } else {
                 healer.heal(healer);
             }
-        }
-        else if (healer.hits < healer.hitsMax) {
+        } else if (healer.hits < healer.hitsMax) {
             healer.heal(healer);
         }
     }
+}
+
+interface EnhancedBodyguardMemory extends MissionMemory {
+    allowUnboosted: boolean;
+    ticksToLive: {[creepId: string]: number};
+    potencyUp: boolean;
+    healUp: boolean;
+}
+
+interface EnhancedBodyguardState extends MissionState {
 }

@@ -1,27 +1,32 @@
 
 import {Operation} from "./Operation";
 import {TransportMission} from "../missions/TransportMission";
-import {empire} from "../../helpers/loopHelper";
+import {OperationPriority} from "../../config/constants";
+import {empire} from "../Empire";
 
 export class TransportOperation extends Operation {
 
+    public memory: any;
+
     constructor(flag: Flag, name: string, type: string) {
         super(flag, name, type);
+        this.priority = OperationPriority.Low;
     }
 
-    initOperation() {
+    public init() {
         this.spawnGroup = empire.getSpawnGroup(this.flag.room.name);
-        this.findOperationWaypoints();
 
         let max = this.memory.max !== undefined ? this.memory.max : 1;
-        this.addMission(new TransportMission(this, max, undefined, undefined, this.memory.resourceType, this.memory.offRoad));
+        this.addMission(new TransportMission(this, max, undefined, undefined, this.memory.resourceType,
+            this.memory.offRoad));
     }
 
-    finalizeOperation() {
+    public update() { }
+
+    public finalize() {
     }
 
-    invalidateOperationCache() {
+    public invalidateCache() {
     }
 
 }
-

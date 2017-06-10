@@ -1,44 +1,56 @@
-import {Mission} from "./Mission";
+import {Mission, MissionMemory} from "./Mission";
 import {Operation} from "../operations/Operation";
 import {MINERALS_RAW, RESERVE_AMOUNT} from "../TradeNetwork";
 import {MINERAL_STORAGE_TARGET} from "../../config/constants";
-import {empire} from "../../helpers/loopHelper";
+import {empire} from "../Empire";
+import {helper} from "../../helpers/helper";
+import {Scheduler} from "../../Scheduler";
+
+interface TerminalNetworkMemory extends MissionMemory {
+    nextOverstockCheck: number;
+    nextSellOverstock: number;
+}
+
 export class TerminalNetworkMission extends Mission {
 
-    terminal: StructureTerminal;
-    storage: StructureStorage;
+    private terminal: StructureTerminal;
+    private storage: StructureStorage;
+    public memory: TerminalNetworkMemory;
 
     constructor(operation: Operation) {
         super(operation, "network");
     }
 
-    initMission() {
+    public init() {}
+
+    public update() {
         this.terminal = this.room.terminal;
         this.storage = this.room.storage;
     }
 
-    roleCall() {
+    public roleCall() {
     }
 
-    missionActions() {
+    public actions() {
         this.sellOverstock();
         this.checkOverstock();
+        // empire.network.registerRoom(this.room);
     }
 
-    finalizeMission() {
+    public finalize() {
     }
 
-    invalidateMissionCache() {
+    public invalidateCache() {
     }
 
     private sellOverstock() {
-
-        if (Game.time % 100 !== 1) return;
+        if (Scheduler.delay(this.memory, "sellOverstock", 100)) { return; }
 
         for (let mineralType of MINERALS_RAW) {
             if (this.storage.store[mineralType] >= MINERAL_STORAGE_TARGET[mineralType]
                 && this.storage.room.terminal.store[mineralType] >= RESERVE_AMOUNT) {
-                console.log("TRADE: have too much", mineralType, "in", this.storage.room, this.storage.store[mineralType]);
+                console.log("TRADE: have too much", mineralType, "in", this.storage.room,
+                    this.storage.store[mineralType]);
                 empire.market.sellExcess(this.room, mineralType, RESERVE_AMOUNT);
             }
         }
@@ -50,13 +62,14 @@ export class TerminalNetworkMission extends Mission {
     }
 
     private checkOverstock() {
-        if (Game.time % 100 !== 0 || _.sum(this.terminal.store) < 250000) return;
+        if (_.sum(this.terminal.store) < 250000) { return; }
+        if (Scheduler.delay(this.memory, "checkOverstock", 20)) { return; }
 
         let mostStockedAmount = 0;
         let mostStockedResource: string;
         for (let resourceType in this.terminal.store) {
-            if (resourceType === RESOURCE_ENERGY) continue;
-            if (this.terminal.store[resourceType] < mostStockedAmount) continue;
+            if (resourceType === RESOURCE_ENERGY) { continue; }
+            if (this.terminal.store[resourceType] < mostStockedAmount) { continue; }
             mostStockedAmount = this.terminal.store[resourceType];
             mostStockedResource = resourceType;
         }

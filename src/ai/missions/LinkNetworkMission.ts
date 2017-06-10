@@ -1,12 +1,25 @@
-import {Mission} from "./Mission";
-import {Agent} from "./Agent";
+import {Mission, MissionMemory, MissionState} from "./Mission";
+import {Agent} from "../agents/Agent";
+import {Scheduler} from "../../Scheduler";
+import {MemHelper} from "../../helpers/MemHelper";
+
+interface LinkNetworkMemory extends MissionMemory {
+    storageLinkIds: string[];
+    linkFiringIndex: number;
+    contLinkId;
+}
+
+interface LinkNetworkState extends MissionState {
+    storageLinks: StructureLink[];
+    sourceLinks: StructureLink[];
+    controllerLink: StructureLink;
+}
+
 export class LinkNetworkMission extends Mission {
 
-    conduits: Agent[];
-
-    storageLinks: StructureLink[] = [];
-    sourceLinks: StructureLink[] = [];
-    controllerLink: StructureLink;
+    private conduits: Agent[];
+    public state: LinkNetworkState;
+    public memory: LinkNetworkMemory;
 
     /**
      * Manages linknetwork in room to efficiently send energy between the storage, controller, and sources
@@ -19,87 +32,83 @@ export class LinkNetworkMission extends Mission {
         super(operation, "linkNetwork");
     }
 
-    initMission() {
-        if (this.room.storage) {
-            let controllerBattery = this.room.controller.getBattery();
-            if (controllerBattery instanceof StructureLink) {
-                this.controllerLink = controllerBattery;
-            }
-            this.findStorageLinks();
-            if (this.room.controller.level === 8) {
-                this.findSourceLinks();
-            }
+    public init() {
+    }
+
+    public update() {
+        this.state.storageLinks = [];
+        this.state.sourceLinks = [];
+        if (!this.room.storage) { return; }
+        this.state.controllerLink = this.findControllerLink();
+        this.findStorageLinks();
+        if (this.room.controller.level === 8) {
+            this.findSourceLinks();
         }
     }
 
-    roleCall() {
+    public roleCall() {
         let conduitBody = () => {
             return this.workerBody(0, 8, 4);
         };
-        let max = () => this.storageLinks.length > 0 && this.controllerLink ? 1: 0;
-        let memory = { scavanger: RESOURCE_ENERGY };
+        let max = () => this.state.storageLinks.length > 0 && this.state.controllerLink ? 1 : 0;
+        let memory = { scavenger: RESOURCE_ENERGY };
         this.conduits = this.headCount("conduit", conduitBody, max, {prespawn: 10, memory: memory });
     }
 
-    missionActions() {
+    public actions() {
         for (let conduit of this.conduits) {
             this.conduitActions(conduit);
         }
 
         if (this.room.controller.level < 8) {
             this.linkNetworkAlpha();
-        }
-        else {
+        } else {
             this.linkNetworkBeta();
         }
     }
 
-    finalizeMission() {
+    public finalize() {
     }
-    invalidateMissionCache() {
+    public invalidateCache() {
     }
 
     private findStorageLinks() {
         if (this.room.controller.level === 8) {
             let storageLink = this.room.storage.findMemoStructure(STRUCTURE_LINK, 2) as StructureLink;
             if (storageLink) {
-                this.storageLinks.push(storageLink);
+                this.state.storageLinks.push(storageLink);
             }
-        }
-        else {
-            if (!this.memory.storageLinkIds || Game.time % 100 === 7) {
-                // I had this as a lodash function but it looked ugly
+        } else {
+            if (!Scheduler.delay(this.memory, "findStorageLinks", 100) || !this.memory.storageLinkIds) {
                 let linkIds = [];
                 let links = this.room.findStructures(STRUCTURE_LINK) as StructureLink[];
                 for (let link of links) {
                     if (link.pos.inRangeTo(this.room.storage, 2)) {
-                        this.storageLinks.push(link);
+                        this.state.storageLinks.push(link);
                         linkIds.push(link.id);
                     }
                 }
                 this.memory.storageLinkIds = linkIds;
-            }
-            else {
+            } else {
                 for (let id of this.memory.storageLinkIds) {
                     let link = Game.getObjectById(id) as StructureLink;
                     if (link) {
-                        this.storageLinks.push(link);
-                    }
-                    else {
+                        this.state.storageLinks.push(link);
+                    } else {
                         this.memory.storageLinkIds = _.pull(this.memory.storageLinkIds, id);
                     }
                 }
             }
 
-            this.storageLinks = _.sortBy(this.storageLinks, "energy");
+            this.state.storageLinks = _.sortBy(this.state.storageLinks, "energy");
         }
     }
 
     private findSourceLinks() {
-        for (let source of this.sources) {
+        for (let source of this.state.sources) {
             let link = source.findMemoStructure(STRUCTURE_LINK, 2) as Link;
             if (link) {
-                this.sourceLinks.push(link);
+                this.state.sourceLinks.push(link);
             }
         }
     }
@@ -113,8 +122,7 @@ export class LinkNetworkMission extends Mission {
         // in position
         if (this.room.controller.level < 8) {
             this.conduitAlphaActions(conduit);
-        }
-        else {
+        } else {
             this.conduitBetaActions(conduit);
         }
     }
@@ -123,18 +131,20 @@ export class LinkNetworkMission extends Mission {
         for (let i = 1; i <= 8; i++) {
             let position = this.room.storage.pos.getPositionAtDirection(i);
             let invalid = false;
-            for (let link of this.storageLinks) {
+            for (let link of this.state.storageLinks) {
                 if (!link.pos.isNearTo(position)) {
                     invalid = true;
                     break;
                 }
             }
-            if (invalid) continue;
+            if (invalid) { continue; }
 
             if (conduit.pos.inRangeTo(position, 0)) {
                 conduit.memory.inPosition = true;
-            }
-            else {
+                // check for road here
+                let road = position.lookForStructure(STRUCTURE_ROAD);
+                if (road) { road.destroy(); }
+            } else {
                 conduit.moveItOrLoseIt(position, "conduit");
             }
             return; // early
@@ -145,9 +155,8 @@ export class LinkNetworkMission extends Mission {
     private conduitAlphaActions(conduit: Agent) {
         if (conduit.carry.energy < conduit.carryCapacity) {
             conduit.withdraw(this.room.storage, RESOURCE_ENERGY);
-        }
-        else {
-            for (let link of this.storageLinks) {
+        } else {
+            for (let link of this.state.storageLinks) {
                 if (link.energy < link.energyCapacity) {
                     conduit.transfer(link, RESOURCE_ENERGY);
                     break;
@@ -157,79 +166,75 @@ export class LinkNetworkMission extends Mission {
     }
 
     private conduitBetaActions(conduit: Agent) {
-        if (this.storageLinks.length === 0) return;
+        if (this.state.storageLinks.length === 0) { return; }
 
-        let link = this.storageLinks[0];
+        let link = this.state.storageLinks[0];
         if (conduit.carry.energy > 0) {
             if (link.energy < 400) {
                 conduit.transfer(link, RESOURCE_ENERGY, Math.min(400 - link.energy, conduit.carry.energy));
-            }
-            else {
+            } else {
                 conduit.transfer(this.room.storage, RESOURCE_ENERGY);
             }
         }
 
         if (link.energy > 400) {
             conduit.withdraw(link, RESOURCE_ENERGY, link.energy - 400);
-        }
-        else if (link.energy < 400) {
+        } else if (link.energy < 400) {
             conduit.withdraw(this.room.storage, RESOURCE_ENERGY, 400 - link.energy);
         }
     }
 
     private linkNetworkAlpha() {
-        if (!this.controllerLink) return;
+        if (!this.state.controllerLink) { return; }
 
-        let longestDistance = this.findLongestDistance(this.controllerLink, this.storageLinks);
+        let longestDistance = this.findLongestDistance(this.state.controllerLink, this.state.storageLinks);
 
-        if (Game.time % (Math.ceil(longestDistance / this.storageLinks.length)) === 0) {
+        if (Game.time % (Math.ceil(longestDistance / this.state.storageLinks.length)) === 0) {
 
             // figure out which one needs to fire
             if (this.memory.linkFiringIndex === undefined) {
                 this.memory.linkFiringIndex = 0;
             }
 
-            let linkToFire = this.storageLinks[this.memory.linkFiringIndex];
+            let linkToFire = this.state.storageLinks[this.memory.linkFiringIndex];
             if (linkToFire) {
-                linkToFire.transferEnergy(this.controllerLink);
-            }
-            else {
+                linkToFire.transferEnergy(this.state.controllerLink);
+            } else {
                 console.log("should never see this message related to alternating link firing");
             }
 
             this.memory.linkFiringIndex++;
-            if (this.memory.linkFiringIndex >= this.storageLinks.length) {
+            if (this.memory.linkFiringIndex >= this.state.storageLinks.length) {
                 this.memory.linkFiringIndex = 0;
             }
         }
     }
 
     private linkNetworkBeta() {
-        let firstLink = this.sourceLinks[0];
-        let storageLink = this.storageLinks[0];
-        if (!storageLink || !this.controllerLink) return; // early
+        let firstLink = this.state.sourceLinks[0];
+        let storageLink = this.state.storageLinks[0];
+        if (!storageLink || !this.state.controllerLink) { return; }
         if (!firstLink) {
-            if (storageLink && storageLink.cooldown === 0 && this.controllerLink) {
+            if (storageLink && storageLink.cooldown === 0 && this.state.controllerLink) {
                 // maintain controller while sourceLinks are not yet built
-                storageLink.transferEnergy(this.controllerLink);
+                storageLink.transferEnergy(this.state.controllerLink);
             }
             return;
         }
 
         if (Game.time % 40 === 0) {
-            if (this.controllerLink.energy < 400) {
-                firstLink.transferEnergy(this.controllerLink);
-            }
-            else {
+            if (this.state.controllerLink.energy < 400) {
+                firstLink.transferEnergy(this.state.controllerLink);
+            } else {
                 firstLink.transferEnergy(storageLink);
             }
         }
-        if (Game.time % 40 === 20 && this.controllerLink.energy < 400) {
-            storageLink.transferEnergy(this.controllerLink, 400 - this.controllerLink.energy);
+        if (Game.time % 40 === 20 && this.state.controllerLink.energy < 400) {
+            storageLink.transferEnergy(this.state.controllerLink, 400 - this.state.controllerLink.energy);
         }
 
-        if (this.sources.length === 1) return;
-        let secondLink = this.sourceLinks[1];
+        if (this.state.sources.length === 1) { return; }
+        let secondLink = this.state.sourceLinks[1];
         if (Game.time % 40 === 10 && secondLink && storageLink) {
             secondLink.transferEnergy(storageLink);
         }
@@ -244,5 +249,13 @@ export class LinkNetworkMission extends Mission {
             }
         }
         return distance;
+    }
+
+    private findControllerLink(): StructureLink {
+        let find = () => {
+            return this.room.controller.pos.findInRange(this.room.findStructures<StructureLink>(STRUCTURE_LINK), 3)[0];
+        };
+
+        return MemHelper.findObject<StructureLink>(this, "contLink", find);
     }
 }
