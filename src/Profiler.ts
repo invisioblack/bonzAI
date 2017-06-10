@@ -6,9 +6,19 @@ export class Profiler {
     }
 
     public static end(identifier: string) {
+        let endCpu = Game.cpu.getUsed();
         let profile = Memory.profiler[identifier];
-        profile.total += Game.cpu.getUsed() - profile.cpu;
+        let cpu = endCpu - profile.cpu;
+        profile.total += cpu;
         profile.count++;
+        if (profile.highest < cpu) {
+            profile.highest = cpu;
+        }
+
+        // if (cpu > 50 && cpu > profile.costPerCall * 100) {
+        //     notifier.log(`PROFILER: high cpu alert: ${identifier}, cpu: ${cpu
+        //     }, typical: ${profile.costPerCall}`);
+        // }
     }
 
     public static resultOnly(identifier: string, result: number, consoleReport = false, period = 5) {
@@ -21,7 +31,7 @@ export class Profiler {
         if (!Memory.profiler[identifier]) {
             Memory.profiler[identifier] = {} as ProfilerData;
         }
-        _.defaults(Memory.profiler[identifier], {total: 0, count: 0, startOfPeriod: Game.time - 1});
+        _.defaults(Memory.profiler[identifier], {total: 0, count: 0, endOfPeriod: Game.time + period, highest: 0});
         Memory.profiler[identifier].period = period;
         Memory.profiler[identifier].consoleReport = consoleReport;
         Memory.profiler[identifier].lastTickTracked = Game.time;
@@ -29,27 +39,39 @@ export class Profiler {
     }
 
     public static finalize() {
+        this.updateProfiles();
+        this.gargabeCollect();
+    }
+
+    private static updateProfiles() {
         for (let identifier in Memory.profiler) {
             let profile = Memory.profiler[identifier];
-            if (Game.time - profile.startOfPeriod >= profile.period) {
-                if (profile.count !== 0) {
-                    profile.costPerCall = _.round(profile.total / profile.count, 2);
-                }
-                profile.costPerTick = _.round(profile.total / profile.period, 2);
+            if (Game.time - profile.lastTickTracked > 1000) {
+                delete Memory.profiler[identifier];
+                continue;
+            }
+
+            if (Game.time >= profile.endOfPeriod) {
+                if (profile.count === 0) { continue; }
+                profile.costPerCall = _.round(profile.total / profile.count, 4);
+                profile.costPerTick = _.round(profile.total / profile.period, 4);
                 profile.callsPerTick = _.round(profile.count / profile.period, 2);
+                profile.max = _.round(profile.highest, 1);
+
                 if (profile.consoleReport) {
                     console.log("PROFILER:", identifier, "perTick:", profile.costPerTick, "perCall:",
-                        profile.costPerCall, "calls per tick:", profile.callsPerTick);
+                        profile.costPerCall, "calls per tick:", profile.callsPerTick, "max:", profile.max);
                 }
-                profile.startOfPeriod = Game.time;
+
+                profile.endOfPeriod = Game.time + profile.period;
                 profile.total = 0;
                 profile.count = 0;
-            }
-            if (Game.time - profile.lastTickTracked > 100) {
-                delete Memory.profiler[identifier];
+                profile.highest = 0;
             }
         }
+    }
 
+    private static gargabeCollect() {
         if (Game.time % 10 === 0) {
             // Memory serialization will cause additional CPU use, better to err on the conservative side
             Memory.cpu.history.push(Game.cpu.getUsed() + Game.gcl.level / 5);
@@ -63,4 +85,39 @@ export class Profiler {
     public static proportionUsed() {
         return Memory.cpu.average / (Game.gcl.level * 10 + 20);
     }
+
+    public static memoryProfile(memory?: any) {
+        if (!memory) {
+            memory = Memory;
+        }
+
+        for (let propertyName in memory) {
+            let value = memory[propertyName];
+            let cpu = Game.cpu.getUsed();
+            let str = JSON.stringify(value);
+            JSON.parse(str);
+            console.log(`${propertyName}: ${Game.cpu.getUsed() - cpu}`);
+        }
+        // this.recursiveMemoryAnalysis(memory, "Memory");
+    }
+
+    private static recursiveMemoryAnalysis(node: any, path: string) {
+        let subNodes = [];
+        for (let key in node) {
+            let subNode = node[key];
+            if (typeof(subNode) !== "object") { continue; }
+            let length = JSON.stringify(subNode).length;
+            if (length < 1000) { continue; }
+            let subPath = `${path}.${key}`;
+            console.log(`path: ${subPath}, length: ${length}`);
+            subNodes.push({path: subPath, node: subNode});
+        }
+
+        for (let item of subNodes) {
+            this.recursiveMemoryAnalysis(item.node, item.path);
+        }
+    }
 }
+
+// make available through console
+global.profiler = Profiler;

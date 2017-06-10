@@ -1,12 +1,14 @@
 import {Operation} from "./ai/operations/Operation";
 import {Empire} from "./ai/Empire";
-import {Agent} from "./ai/missions/Agent";
+import {Agent} from "./ai/agents/Agent";
 import {SpawnGroup} from "./ai/SpawnGroup";
+import {HostileAgent} from "./ai/agents/HostileAgent";
 
+// noinspection TsLint
 export interface bonzAI {
     cache: {
         structures: { [roomName: string]: {[structureType: string]: Structure[]} },
-        hostiles:  { [roomName: string]: Creep[] },
+        hostiles: { [roomName: string]: Creep[] },
         hostilesAndLairs: { [roomName: string]: RoomObject[] }
         lairThreats: { [roomName: string]: StructureKeeperLair[] }
         fleeObjects: { [roomName: string]: RoomObject[] }
@@ -64,7 +66,6 @@ export interface HeadCountOptions {
     skipMoveToRoom?: boolean;
     boosts?: string[];
     allowUnboosted?: boolean;
-    altSpawnGroup?: SpawnGroup;
 }
 
 export interface SpawnReservation {
@@ -74,21 +75,63 @@ export interface SpawnReservation {
 
 export interface BoostRequests {
     [resourceType: string]: {
-        flagName: string;
         requesterIds: string[];
     };
 }
 
 export interface RaidData {
+    squadsPresent: number;
     raidAgents: Agent[];
     injuredCreeps: {[creepName: string]: number};
-    breachFlags: Flag[];
-    breachStructures: Structure[];
+    fallback: boolean;
+    attackFlag: Flag;
     attackRoom: Room;
     fallbackFlag: Flag;
-    targetStructures: Structure[];
-    fallback: boolean;
     obstacles: {pos: RoomPosition}[];
+    targetFlags: Flag[];
+    targetStructures: Structure[];
+    raidMatrix: CostMatrix;
+    nextNuke: number;
+}
+
+export interface FleeAnalysis {
+    fleeType: FleeType;
+    closestToHealer: number;
+    closestToAttacker: number;
+    rangeToClosest: number;
+    singleMover?: Agent;
+    singleMoveDirection?: number;
+    attackerLeads?: boolean;
+}
+
+export enum FleeType {
+    SingleMove,
+    SafeToTravel,
+    KeepAtRange,
+    Flee
+}
+
+export enum FleeDanger {
+    VeryHigh,
+    High,
+    Medium,
+    Low,
+    None,
+}
+
+export interface RaidAction {
+    type: RaidActionType;
+    endAtTick?: number;
+    position?: {x: number, y: number, roomName: string};
+    id?: string;
+}
+
+export enum RaidActionType {
+    Retreat,
+    Headhunter,
+    EdgeScoot,
+    Wallflower,
+    LurkOutside,
 }
 
 export interface RaidCache {
@@ -114,7 +157,7 @@ export interface Coord {
     y: number;
 }
 
-export enum BoostLevel { Training, Unboosted, Boosted, SuperTough, RCL7 }
+export enum BoostLevel { Training, Unboosted, Standard, SuperTough, RCL7, AntiRepair }
 
 export interface SeedSelection {
     seedType: string;
@@ -143,10 +186,25 @@ export interface BankData {
     finishing?: boolean;
     distance: number;
     timeout: number;
+    posCount: number;
+    wavesLeft: number;
 }
 
 export interface FleeData {
     path: string;
     nextPos: RoomPosition;
     delay: number;
+}
+
+export interface BuildingPlannerData {
+    name: string;
+    pivot: {x: number, y: number };
+    radius: number;
+    taper: number;
+    buildings: {[structureType: string]: {
+        pos: {
+            x: number,
+            y: number
+        }[]
+    }}
 }
